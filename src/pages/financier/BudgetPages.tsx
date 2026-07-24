@@ -44,6 +44,7 @@ import {
   budgetPoolRingColors,
 } from '@/lib/financierColors'
 import { budgetBasedProfitShare, formatMoneyInput, formatPhp, moneyInputFromValue, toNumber } from '@/lib/money'
+import { projectIdentityKey } from '@/lib/finance-group'
 import { projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -154,6 +155,34 @@ function sortBudgetRowsByDate<T extends { financingDate: string | null; projectN
     const byDate = compareFinancingDatesDesc(a.financingDate, b.financingDate)
     if (byDate !== 0) return byDate
     return a.projectName.localeCompare(b.projectName)
+  })
+}
+
+type BudgetPfSourceRow = {
+  project_id: string
+  confirmed_amount: number | string | null
+  projects: Pick<
+    Project,
+    'id' | 'name' | 'status' | 'capital_required' | 'expected_profit' | 'financing_date' | 'duration_days' | 'group_id'
+  > | null
+}
+
+/** Hide solo duplicate when the same finance name+date exists in a group batch. */
+function dedupeBudgetPfRows(rows: BudgetPfSourceRow[]): BudgetPfSourceRow[] {
+  const groupedKeys = new Set<string>()
+  for (const row of rows) {
+    const project = row.projects
+    if (!project) continue
+    const key = projectIdentityKey(project)
+    if (key && project.group_id) groupedKeys.add(key)
+  }
+  if (groupedKeys.size === 0) return rows
+  return rows.filter((row) => {
+    const project = row.projects
+    if (!project) return false
+    const key = projectIdentityKey(project)
+    if (!key || project.group_id) return true
+    return !groupedKeys.has(key)
   })
 }
 
@@ -323,7 +352,7 @@ export function FinancierBudgetListPage() {
       supabase
         .from('project_financiers')
         .select(
-          'project_id, confirmed_amount, commitment_status, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, duration_days)',
+          'project_id, confirmed_amount, commitment_status, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, duration_days, group_id)',
         )
         .eq('financier_id', profile.id)
         .order('created_at', { ascending: false }),
@@ -344,14 +373,7 @@ export function FinancierBudgetListPage() {
     if (poolsRes.error) toast.error(poolsRes.error.message)
 
     const pfRows =
-      (pfRes.data as unknown as Array<{
-        project_id: string
-        confirmed_amount: number | string | null
-        projects: Pick<
-          Project,
-          'id' | 'name' | 'status' | 'capital_required' | 'expected_profit' | 'financing_date' | 'duration_days'
-        > | null
-      }>) ?? []
+      (pfRes.data as unknown as BudgetPfSourceRow[]) ?? []
 
     const poolColorById = new Map<string, number>()
     for (const p of (poolsRes.data as { id: string; color_index: number }[] | null) ?? []) {
@@ -399,9 +421,7 @@ export function FinancierBudgetListPage() {
       })
     }
 
-    const list: BudgetListRow[] = pfRows
-      .filter((r) => r.projects)
-      .map((r) => {
+    const list: BudgetListRow[] = dedupeBudgetPfRows(pfRows.filter((r) => r.projects)).map((r) => {
         const budget = budgetByProject.get(r.project_id)
         const myConfirmed = toNumber(r.confirmed_amount)
         const capitalRequired = toNumber(r.projects!.capital_required)
@@ -424,8 +444,8 @@ export function FinancierBudgetListPage() {
           poolId: budget?.poolId ?? null,
           poolColorIndex: budget?.poolColorIndex ?? null,
           chipIns: budget?.chipIns ?? [],
-        }
-      })
+      }
+    })
 
     setRows(sortBudgetRowsByDate(list))
     setSelectedIds((prev) => prev.filter((id) => list.some((r) => r.projectId === id)))
