@@ -1,0 +1,23 @@
+# MCP config may contain access tokens
+.cursor/mcp.json
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Dependencies & build
+node_modules
+dist
+dist-ssr
+*.local
+
+# Logs / OS
+logs
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json

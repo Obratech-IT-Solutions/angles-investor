@@ -1,0 +1,112 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Serif:wght@600;700&display=swap");
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "IBM Plex Serif", Georgia, serif;
+
+  --color-background: #f4f6f9;
+  --color-foreground: #0b1f33;
+  --color-card: #ffffff;
+  --color-card-foreground: #0b1f33;
+  --color-popover: #ffffff;
+  --color-popover-foreground: #0b1f33;
+  --color-primary: #0b2a4a;
+  --color-primary-foreground: #f8fafc;
+  --color-secondary: #e8eef5;
+  --color-secondary-foreground: #0b2a4a;
+  --color-muted: #eef2f6;
+  --color-muted-foreground: #5b6b7c;
+  --color-accent: #d9e4f0;
+  --color-accent-foreground: #0b2a4a;
+  --color-destructive: #c0392b;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #1f7a4d;
+  --color-success-foreground: #ffffff;
+  --color-warning: #b7791f;
+  --color-warning-foreground: #ffffff;
+  --color-border: #d5dee8;
+  --color-input: #d5dee8;
+  --color-ring: #1a4a73;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    @apply antialiased;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans min-h-screen;
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+@keyframes money-fall {
+  0% {
+    transform: translate3d(0, -12vh, 0) rotate(0deg);
+  }
+  100% {
+    transform: translate3d(var(--sway, 20px), 110vh, 0) rotate(360deg);
+  }
+}
+
+.money-drop {
+  animation-name: money-fall;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+  will-change: transform;
+  text-shadow: 0 0 12px rgba(52, 211, 153, 0.35);
+}
+
+@keyframes badge-beat {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  40% {
+    transform: scale(1.08);
+    filter: brightness(1.12);
+  }
+  55% {
+    transform: scale(0.98);
+    filter: brightness(1);
+  }
+  70% {
+    transform: scale(1.05);
+    filter: brightness(1.08);
+  }
+}
+
+.animate-badge-beat {
+  animation: badge-beat 1.35s ease-in-out infinite;
+  transform-origin: center;
+  will-change: transform;
+}
+
+@keyframes badge-beat-table {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+.animate-badge-beat-table {
+  animation: badge-beat-table 1.35s ease-in-out infinite;
+  transform-origin: center;
+}
+
+

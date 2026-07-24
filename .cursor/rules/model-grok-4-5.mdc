@@ -1,0 +1,20 @@
+---
+description: Require Cursor Grok 4.5 for all FundTrack agent work
+alwaysApply: true
+---
+
+# Model policy — Cursor Grok 4.5 only
+
+For **all** work in this FundTrack project (implementation, docs, review, debugging, Task/subagents):
+
+- Use **only** Cursor Grok 4.5.
+- When launching the Task tool or any subagent, set:
+
+```text
+model: cursor-grok-4.5-high-fast
+```
+
+- Do **not** use Claude Sonnet, Claude Opus, Composer, GPT, Kimi, or other models for this repo.
+- Do **not** omit the model parameter (no “auto”) for Task/subagents — always pass `cursor-grok-4.5-high-fast`.
+
+If the user asks to switch models, update this rule first.
