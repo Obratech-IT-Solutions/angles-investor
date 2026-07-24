@@ -19,16 +19,119 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { formatPercent, formatPhp, fundingProgress, remainingGap, toNumber } from '@/lib/money'
+import { dedupeOverlappingProjects } from '@/lib/finance-group'
+import { budgetBasedProfitShare, formatPercent, formatPhp, fundingProgress, remainingGap, toNumber } from '@/lib/money'
 import { projectStatusTableClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { PROJECT_STATUS_LABELS, type Project, type ProjectFinancier } from '@/types'
 
 const STATUS_COLORS = ['#0b2a4a', '#1a4a73', '#b7791f', '#1f7a4d', '#5b6b7c', '#c0392b', '#334e68', '#486581']
 
+const RELEASED_STATUSES = new Set<Project['status']>(['released', 'completed'])
+
+function isReleasedFinance(status: Project['status'] | string): boolean {
+  return RELEASED_STATUSES.has(status as Project['status'])
+}
+
+function sumFinanceTotals(items: Project[]): { capital: number; profit: number } {
+  return items.reduce(
+    (acc, p) => ({
+      capital: acc.capital + toNumber(p.capital_required),
+      profit: acc.profit + toNumber(p.expected_profit),
+    }),
+    { capital: 0, profit: 0 },
+  )
+}
+
+type FinancierAnalyticsRow = {
+  financierId: string
+  name: string
+  funded: number
+  profit: number
+}
+
+function aggregateFinancierAnalytics(
+  projects: Project[],
+  commitments: ProjectFinancier[],
+): { byFunded: FinancierAnalyticsRow[]; byProfit: FinancierAnalyticsRow[] } {
+  const unique = dedupeOverlappingProjects(projects)
+  const includedProjectIds = new Set(unique.map((p) => p.id))
+  const projectById = new Map(unique.map((p) => [p.id, p]))
+  const byFinancier = new Map<string, FinancierAnalyticsRow>()
+
+  for (const row of commitments) {
+    if (row.commitment_status !== 'confirmed') continue
+    if (!includedProjectIds.has(row.project_id)) continue
+
+    const project = projectById.get(row.project_id)
+    if (!project) continue
+
+    const amount = toNumber(row.confirmed_amount)
+    if (amount <= 0) continue
+
+    const profile = row.profiles as { full_name?: string; display_name?: string } | null | undefined
+    const name = profile?.display_name || profile?.full_name || 'Unknown'
+    const profit =
+      Math.round(
+        budgetBasedProfitShare(amount, toNumber(project.capital_required), toNumber(project.expected_profit)) *
+          100,
+      ) / 100
+
+    const current = byFinancier.get(row.financier_id) ?? {
+      financierId: row.financier_id,
+      name,
+      funded: 0,
+      profit: 0,
+    }
+    current.funded += amount
+    current.profit += profit
+    byFinancier.set(row.financier_id, current)
+  }
+
+  const rows = [...byFinancier.values()]
+  return {
+    byFunded: [...rows].sort((a, b) => b.funded - a.funded),
+    byProfit: [...rows].sort((a, b) => b.profit - a.profit),
+  }
+}
+
+function FinancierPieChart({
+  data,
+  valueKey,
+  emptyTitle,
+}: {
+  data: FinancierAnalyticsRow[]
+  valueKey: 'funded' | 'profit'
+  emptyTitle: string
+}) {
+  const chartData = data.map((row) => ({
+    key: row.financierId,
+    name: row.name,
+    value: row[valueKey],
+  }))
+
+  if (chartData.length === 0) {
+    return <EmptyState title={emptyTitle} />
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height="100%">
+      <PieChart>
+        <Pie data={chartData} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90} paddingAngle={2}>
+          {chartData.map((entry, i) => (
+            <Cell key={entry.key} fill={STATUS_COLORS[i % STATUS_COLORS.length]} />
+          ))}
+        </Pie>
+        <Tooltip formatter={(v: number) => formatPhp(v)} />
+      </PieChart>
+    </ResponsiveContainer>
+  )
+}
+
 export function AdminDashboardPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [financiers, setFinanciers] = useState<ProjectFinancier[]>([])
+  const [confirmedCommitments, setConfirmedCommitments] = useState<ProjectFinancier[]>([])
   const [confirmedByProject, setConfirmedByProject] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -42,7 +145,7 @@ export function AdminDashboardPage() {
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const [pRes, fRes, cRes] = await Promise.all([
+      const [pRes, fRes, cRes, confirmedRes] = await Promise.all([
         supabase.from('projects').select('*').order('created_at', { ascending: false }),
         supabase
           .from('project_financiers')
@@ -54,10 +157,17 @@ export function AdminDashboardPage() {
           .from('project_financiers')
           .select('project_id, confirmed_amount, commitment_status')
           .eq('commitment_status', 'confirmed'),
+        supabase
+          .from('project_financiers')
+          .select(
+            'id, financier_id, project_id, confirmed_amount, confirmed_percentage, commitment_status, profiles:financier_id(full_name, display_name), projects:project_id(id, name, capital_required, expected_profit, group_id, financing_date, status)',
+          )
+          .eq('commitment_status', 'confirmed'),
       ])
       if (cancelled) return
       setProjects((pRes.data as Project[]) ?? [])
       setFinanciers((fRes.data as ProjectFinancier[]) ?? [])
+      setConfirmedCommitments((confirmedRes.data as ProjectFinancier[]) ?? [])
       const confirmedMap: Record<string, number> = {}
       for (const row of (cRes.data as Pick<ProjectFinancier, 'project_id' | 'confirmed_amount'>[]) ?? []) {
         confirmedMap[row.project_id] = (confirmedMap[row.project_id] ?? 0) + toNumber(row.confirmed_amount)
@@ -93,9 +203,17 @@ export function AdminDashboardPage() {
   }, [projects, confirmedByProject])
 
   const stats = useMemo(() => {
-    const capital = projects.reduce((sum, p) => sum + toNumber(p.capital_required), 0)
+    const unique = dedupeOverlappingProjects(projects)
+    const operational = unique.filter((p) => p.status !== 'draft' && p.status !== 'cancelled')
+    const released = operational.filter((p) => isReleasedFinance(p.status))
+    const active = operational.filter((p) => !isReleasedFinance(p.status))
+
+    const total = sumFinanceTotals(operational)
+    const releasedTotals = sumFinanceTotals(released)
+    const activeTotals = sumFinanceTotals(active)
+
     const byStatus = Object.entries(
-      projects.reduce<Record<string, number>>((acc, p) => {
+      unique.reduce<Record<string, number>>((acc, p) => {
         acc[p.status] = (acc[p.status] ?? 0) + 1
         return acc
       }, {}),
@@ -104,12 +222,26 @@ export function AdminDashboardPage() {
       count,
       key: status,
     }))
-    const capitalByProject = projects.slice(0, 8).map((p) => ({
+    const capitalByProject = unique.slice(0, 8).map((p) => ({
       name: p.name.length > 16 ? `${p.name.slice(0, 16)}…` : p.name,
       capital: toNumber(p.capital_required),
     }))
-    return { capital, byStatus, capitalByProject, count: projects.length }
+    return {
+      capital: total.capital,
+      capitalActive: activeTotals.capital,
+      capitalReleased: releasedTotals.capital,
+      profitActive: activeTotals.profit,
+      profitReleased: releasedTotals.profit,
+      byStatus,
+      capitalByProject,
+      count: unique.length,
+    }
   }, [projects])
+
+  const financierAnalytics = useMemo(
+    () => aggregateFinancierAnalytics(projects, confirmedCommitments),
+    [projects, confirmedCommitments],
+  )
 
   if (loading) {
     return (
@@ -119,6 +251,20 @@ export function AdminDashboardPage() {
           <Skeleton className="h-28" />
           <Skeleton className="h-28" />
           <Skeleton className="h-28" />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Skeleton className="h-72" />
+          <Skeleton className="h-72" />
+        </div>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Skeleton className="h-72" />
+          <Skeleton className="h-72" />
         </div>
       </div>
     )
@@ -169,6 +315,13 @@ export function AdminDashboardPage() {
         </Card>
       </div>
 
+      <div className="mb-6 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <KpiCard label="Total capital active" value={formatPhp(stats.capitalActive)} />
+        <KpiCard label="Total capital released" value={formatPhp(stats.capitalReleased)} />
+        <KpiCard label="Total profit active" value={formatPhp(stats.profitActive)} />
+        <KpiCard label="Total profit released" value={formatPhp(stats.profitReleased)} />
+      </div>
+
       <div className="mb-6 grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader>
@@ -209,6 +362,35 @@ export function AdminDashboardPage() {
                 </PieChart>
               </ResponsiveContainer>
             )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="mb-6 grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Top financiers by capital funded</CardTitle>
+            <p className="text-xs text-muted-foreground">Confirmed commitments across all finances</p>
+          </CardHeader>
+          <CardContent className="h-72">
+            <FinancierPieChart
+              data={financierAnalytics.byFunded}
+              valueKey="funded"
+              emptyTitle="No confirmed funding yet"
+            />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Top financiers by expected gain</CardTitle>
+            <p className="text-xs text-muted-foreground">Expected profit share from confirmed amounts</p>
+          </CardHeader>
+          <CardContent className="h-72">
+            <FinancierPieChart
+              data={financierAnalytics.byProfit}
+              valueKey="profit"
+              emptyTitle="No profit share data yet"
+            />
           </CardContent>
         </Card>
       </div>

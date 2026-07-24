@@ -1,0 +1,20 @@
+{
+  "label": "20260724_production_snapshot",
+  "exported_at": "2026-07-24T11:56:22.058683+00:00",
+  "description": "Full Angels Investor finance data snapshot for migration/restore",
+  "counts": {
+    "finance_groups": 3,
+    "projects": 21,
+    "profiles": 6,
+    "project_financiers": 43,
+    "project_releases": 6,
+    "financier_release_payments": 8,
+    "financier_budget_pools": 2,
+    "system_settings": 2
+  },
+  "notes": [
+    "Profiles include pin_hash for PIN login restore.",
+    "Auth users (auth.users) must exist with matching UUIDs before restore.",
+    "Apply all schema migrations first, then run scripts/restore-data-backup.mjs."
+  ]
+}

@@ -1,0 +1,39 @@
+[
+  {
+    "id": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "username": "admin",
+    "role": "admin",
+    "full_name": "BOSS NEIL",
+    "note": "Admin login uses system_settings admin_pin, not pin_hash"
+  },
+  {
+    "id": "984d2848-08b6-4a9d-b8f3-134d99842ed9",
+    "username": "jerwin.b09437",
+    "role": "financier",
+    "full_name": "JERWIN"
+  },
+  {
+    "id": "03f782d1-e92b-4978-8711-5743cbfada3e",
+    "username": "macky.25d7e4",
+    "role": "financier",
+    "full_name": "MACKY"
+  },
+  {
+    "id": "157e8c8c-d6d3-48f6-848c-2b8277084fea",
+    "username": "man.586733",
+    "role": "financier",
+    "full_name": "MAN"
+  },
+  {
+    "id": "62913012-5b81-4035-bbc4-2feeb900c9bf",
+    "username": "niko.1c2776",
+    "role": "financier",
+    "full_name": "NIKO"
+  },
+  {
+    "id": "a8f3c2e1-4b5d-6a7c-8d9e-0f1a2b3c4d5e",
+    "username": "ben.a8f3c2e1",
+    "role": "financier",
+    "full_name": "BEN"
+  }
+]

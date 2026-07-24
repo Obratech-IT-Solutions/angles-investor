@@ -57,7 +57,28 @@ Protect financing, allocation, release, and audit data against accidental deleti
 - Quarterly restore drill to a throwaway project
 - Record results in ops log before Gate 5
 
-## 7. Related
+## 7. JSON snapshot backup (repo)
+
+A full logical export of production finance data lives at:
+
+- `supabase/backups/20260724_production_snapshot/`
+
+See [supabase/backups/README.md](../supabase/backups/README.md) for restore steps.
+
+**Restore order on a new Supabase project:**
+
+1. Apply all schema migrations.
+2. Create `auth.users` with the UUIDs in `auth_users_reference.json` (Admin API).
+3. Run `node scripts/restore-data-backup.mjs supabase/backups/20260724_production_snapshot` with `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` set.
+
+**Create a new snapshot:**
+
+```bash
+node scripts/export-data-backup.mjs
+```
+
+## 8. Related
 
 - [docs/17-deployment-plan.md](17-deployment-plan.md)
 - [docs/20-production-readiness.md](20-production-readiness.md)
+- [supabase/backups/README.md](../supabase/backups/README.md)

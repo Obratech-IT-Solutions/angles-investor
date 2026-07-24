@@ -33,7 +33,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { MoneyInput } from '@/components/ui/money-input'
 import { budgetPoolColorIndexFromId, budgetPoolLeftBorderColors } from '@/lib/financierColors'
-import { formatPercent, formatPhp, fundingProgress, moneyInputFromValue, remainingGap, toNumber } from '@/lib/money'
+import { dedupeOverlappingProjects } from '@/lib/finance-group'
+import { formatPercent, formatPhp, fundingProgress, moneyInputFromValue, remainingGap, toNumber, totalReceivable } from '@/lib/money'
 import { adminConfirmedAmountDraft } from '@/lib/commitments'
 import { commitmentStatusVariant, projectStatusClassName, projectStatusTableClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
@@ -153,7 +154,7 @@ export function AdminProjectsPage() {
       if (q && !p.name.toLowerCase().includes(q.toLowerCase())) return false
       return true
     })
-    return groupProjectsForDisplay(list)
+    return groupProjectsForDisplay(dedupeOverlappingProjects(list))
   }, [projects, status, q])
 
   useEffect(() => {
@@ -214,6 +215,7 @@ export function AdminProjectsPage() {
                   <TableHead className="whitespace-nowrap">Financing date</TableHead>
                   <TableHead className="text-right">Capital</TableHead>
                   <TableHead className="text-right">Expected profit</TableHead>
+                  <TableHead className="text-right whitespace-nowrap">Total amount</TableHead>
                   <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
@@ -264,6 +266,9 @@ export function AdminProjectsPage() {
                     <TableCell className="whitespace-nowrap tabular-nums">{p.financing_date}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatPhp(p.capital_required)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatPhp(p.expected_profit)}</TableCell>
+                    <TableCell className="text-right font-medium tabular-nums">
+                      {formatPhp(totalReceivable(toNumber(p.capital_required), toNumber(p.expected_profit)))}
+                    </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>

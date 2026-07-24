@@ -1,0 +1,74 @@
+[
+  {
+    "id": "30ad68a1-89bc-49fb-93ca-90e520d85e8d",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:14:56.006533+00:00",
+    "project_id": "03f266b9-ae6a-46b0-b55f-c59a84c87351",
+    "actual_date": "2026-07-03",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-03",
+    "profit_released": 16000,
+    "capital_released": 41200
+  },
+  {
+    "id": "27e5193d-da0a-46be-8d39-26d7c56cff3b",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:14:56.006533+00:00",
+    "project_id": "229319a5-0f4d-4005-a3b5-2272b7c59623",
+    "actual_date": "2026-07-08",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-08",
+    "profit_released": 30178,
+    "capital_released": 95105
+  },
+  {
+    "id": "d3334507-a5a0-4334-a123-261d32f6c150",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:14:56.006533+00:00",
+    "project_id": "4e03a8d0-9eda-4542-ac98-2ed3d990602f",
+    "actual_date": "2026-07-07",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-07",
+    "profit_released": 22500,
+    "capital_released": 50000
+  },
+  {
+    "id": "cfafd771-6325-4911-bc8d-3e2ed1dd24f2",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:14:56.006533+00:00",
+    "project_id": "379c1a22-5ec6-43bd-a8cb-f6c2c53d6d69",
+    "actual_date": "2026-07-10",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-10",
+    "profit_released": 20618,
+    "capital_released": 45762
+  },
+  {
+    "id": "9778acc3-cc86-47ee-a764-6de90094ae25",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:14:56.006533+00:00",
+    "project_id": "69208149-d3aa-4aed-969c-84874259a429",
+    "actual_date": "2026-07-03",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-03",
+    "profit_released": 24366,
+    "capital_released": 45000
+  },
+  {
+    "id": "a0556460-fb0c-4a69-946c-7449bc2975c2",
+    "notes": "Imported from spreadsheet — released",
+    "created_at": "2026-07-24T11:18:28.164462+00:00",
+    "project_id": "8b8ad96e-d37f-42f1-a29a-eea3f90059e3",
+    "actual_date": "2026-07-10",
+    "recorded_by": "64fdb6af-b37c-4edd-b57b-b0d8b0ec9879",
+    "release_status": "released",
+    "scheduled_date": "2026-07-10",
+    "profit_released": 26800,
+    "capital_released": 48160
+  }
+]

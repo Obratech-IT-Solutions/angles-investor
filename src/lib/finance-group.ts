@@ -1,5 +1,6 @@
 import { distributeProportionalAmounts } from '@/lib/budget'
 import { toNumber } from '@/lib/money'
+import type { Project } from '@/types'
 
 export type FinanceGroupLineInput = {
   projectId: string
@@ -96,4 +97,26 @@ export function sumGroupBudget(lines: Array<{ capitalRequired: number | string }
 
 export function sumGroupProfit(lines: Array<{ expectedProfit: number | string }>): number {
   return lines.reduce((s, l) => s + toNumber(l.expectedProfit), 0)
+}
+
+export function projectIdentityKey(p: Pick<Project, 'name' | 'financing_date'>): string | null {
+  const name = p.name?.trim()
+  const date = p.financing_date
+  if (!name || !date) return null
+  return `${name.toLowerCase()}|${date}`
+}
+
+/** Drop solo rows when the same finance name+date also exists in a group batch. */
+export function dedupeOverlappingProjects(items: Project[]): Project[] {
+  const groupedKeys = new Set<string>()
+  for (const p of items) {
+    const key = projectIdentityKey(p)
+    if (key && p.group_id) groupedKeys.add(key)
+  }
+  if (groupedKeys.size === 0) return items
+  return items.filter((p) => {
+    const key = projectIdentityKey(p)
+    if (!key || p.group_id) return true
+    return !groupedKeys.has(key)
+  })
 }

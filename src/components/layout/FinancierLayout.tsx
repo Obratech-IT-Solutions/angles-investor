@@ -25,16 +25,19 @@ const finNav: NavItem[] = [
 ]
 
 function Brand() {
+  const { profile } = useAuth()
+  const financierName = profile?.display_name || profile?.full_name || 'Financier'
+
   return (
     <Link to="/app" className="flex items-center gap-2 px-4 py-5">
       <div className="flex h-9 w-9 items-center justify-center rounded-md bg-white/15 text-white">
         <DollarSign className="h-5 w-5" aria-hidden />
       </div>
-      <div>
-        <div className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight text-white">
-          Angels Investor
+      <div className="min-w-0">
+        <div className="truncate font-[family-name:var(--font-display)] text-lg font-bold tracking-tight text-white">
+          {financierName}
         </div>
-        <div className="text-[11px] uppercase tracking-wider text-slate-300">Financier</div>
+        <div className="truncate text-[11px] uppercase tracking-wider text-slate-300">Angels Investor</div>
       </div>
     </Link>
   )
@@ -71,6 +74,7 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
 
 export function FinancierLayout() {
   const [open, setOpen] = useState(false)
+  const { profile } = useAuth()
 
   return (
     <div className="min-h-screen bg-background lg:grid lg:grid-cols-[260px_1fr]">
@@ -94,7 +98,10 @@ export function FinancierLayout() {
               <SidebarBody onNavigate={() => setOpen(false)} />
             </SheetContent>
           </Sheet>
-          <div className="text-sm text-muted-foreground">My financing</div>
+          <div className="truncate text-sm font-medium text-foreground lg:hidden">
+            {profile?.display_name || profile?.full_name || 'My financing'}
+          </div>
+          <div className="hidden text-sm text-muted-foreground lg:block">My financing</div>
         </header>
         <main className="flex-1 p-4 lg:p-8">
           <Outlet />

@@ -43,7 +43,8 @@ import {
   totalReceivable,
 } from '@/lib/money'
 import { commitmentStatusVariant, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
-import { budgetPoolBorderColors, budgetPoolColorIndexFromId, budgetPoolLeftBorderColors, financingDateChipColors, formatFinancingDateChip } from '@/lib/financierColors'
+import { budgetPoolBorderColors, budgetPoolColorIndexFromId, budgetPoolLeftBorderColors, financingDateChipColors, formatFinancingDateChip, FINANCIER_COLORS } from '@/lib/financierColors'
+import { calculateBudgetSummary, type BudgetLenderInput } from '@/lib/budget'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -51,6 +52,7 @@ import {
   PROJECT_STATUS_LABELS,
   RELEASE_STATUS_LABELS,
   type FinancierReleasePayment,
+  type FinancierProjectBudget,
   type Project,
   type ProjectFinancier,
   type ProjectRelease,
@@ -209,6 +211,21 @@ function rowDisplayAmount(row: ProjectFinancier): number {
   return row.commitment_status === 'confirmed'
     ? toNumber(row.confirmed_amount)
     : toNumber(row.current_suggested_amount)
+}
+
+function rowDisplayProfit(row: ProjectFinancier): number {
+  const amount = rowDisplayAmount(row)
+  const capital = toNumber(row.projects?.capital_required)
+  const expectedProfit = toNumber(row.projects?.expected_profit)
+  if (capital > 0 && amount > 0) {
+    return Math.round(budgetBasedProfitShare(amount, capital, expectedProfit) * 100) / 100
+  }
+  return Math.round(expectedProfit * toNumber(row.confirmed_percentage) * 100) / 100
+}
+
+function rowDisplayTotal(row: ProjectFinancier): number {
+  const amount = rowDisplayAmount(row)
+  return totalReceivable(amount, rowDisplayProfit(row))
 }
 
 function rowCanDecide(row: ProjectFinancier): boolean {
@@ -519,12 +536,14 @@ function FinancierFinanceList({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="sticky left-0 z-10 w-9 bg-background px-0" aria-label="Group" />
-              <TableHead className="sticky left-9 z-10 bg-background">Start</TableHead>
+              <TableHead className="w-9 px-0" aria-label="Group" />
+              <TableHead className="whitespace-nowrap">Start</TableHead>
               <TableHead>Finance</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Commitment</TableHead>
               <TableHead className="text-right">{hasConfirmed ? 'Your amount' : 'Suggested'}</TableHead>
+              <TableHead className="text-right">Profit</TableHead>
+              <TableHead className="text-right whitespace-nowrap">Total to receive</TableHead>
               <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -546,7 +565,7 @@ function FinancierFinanceList({
                   {entry.kind === 'group-member' && entry.isFirst ? (
                     <TableCell
                       rowSpan={entry.rowSpan}
-                      className="sticky left-0 z-10 w-9 border-r border-border/60 bg-muted/15 p-0 align-middle"
+                      className="w-9 border-r border-border/60 bg-muted/15 p-0 align-middle"
                     >
                       <button
                         type="button"
@@ -564,9 +583,9 @@ function FinancierFinanceList({
                       </button>
                     </TableCell>
                   ) : entry.kind === 'single' ? (
-                    <TableCell className="sticky left-0 z-10 w-9 bg-background p-0" aria-hidden />
+                    <TableCell className="w-9 p-0" aria-hidden />
                   ) : null}
-                  <TableCell className="sticky left-9 z-10 bg-background">
+                  <TableCell className="whitespace-nowrap">
                     {startDate && dateChip ? (
                       <span
                         className={cn(
@@ -605,6 +624,12 @@ function FinancierFinanceList({
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">{formatPhp(rowDisplayAmount(row))}</TableCell>
+                  <TableCell className="text-right text-sm tabular-nums text-muted-foreground">
+                    {formatPhp(rowDisplayProfit(row))}
+                  </TableCell>
+                  <TableCell className="text-right font-medium tabular-nums">
+                    {formatPhp(rowDisplayTotal(row))}
+                  </TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                     <FinancierRowActionButton row={row} onOpen={onRowClick} />
                   </TableCell>
@@ -625,13 +650,7 @@ function FinancierFinanceList({
 }
 
 function rowExpectedProfit(row: ProjectFinancier): number {
-  const amount = toNumber(row.confirmed_amount)
-  const capital = toNumber(row.projects?.capital_required)
-  const profit = toNumber(row.projects?.expected_profit)
-  if (capital > 0 && amount > 0) {
-    return Math.round(budgetBasedProfitShare(amount, capital, profit) * 100) / 100
-  }
-  return Math.round(profit * toNumber(row.confirmed_percentage) * 100) / 100
+  return rowDisplayProfit(row)
 }
 
 export function FinancierDashboardPage() {
@@ -1455,20 +1474,58 @@ export function FinancierReleasesPage() {
 export function FinancierAnalyticsPage() {
   const { profile } = useAuth()
   const [rows, setRows] = useState<ProjectFinancier[]>([])
+  const [budgetByProject, setBudgetByProject] = useState<
+    Map<
+      string,
+      {
+        ownCapital: number
+        manualProfit: number | null
+        lenders: BudgetLenderInput[]
+      }
+    >
+  >(new Map())
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     if (!profile) return
-    void supabase
-      .from('project_financiers')
-      .select('*, projects:project_id(id, name, status, expected_profit)')
-      .eq('financier_id', profile.id)
-      .eq('commitment_status', 'confirmed')
-      .then(({ data, error }) => {
-        if (error) toast.error(error.message)
-        setRows((data as ProjectFinancier[]) ?? [])
-        setLoading(false)
-      })
+    void (async () => {
+      const [pfRes, budgetRes] = await Promise.all([
+        supabase
+          .from('project_financiers')
+          .select('*, projects:project_id(id, name, status, capital_required, expected_profit)')
+          .eq('financier_id', profile.id)
+          .eq('commitment_status', 'confirmed'),
+        supabase
+          .from('financier_project_budgets')
+          .select(
+            'project_id, own_capital, manual_profit, financier_project_lenders(lender_name, borrowed_amount, promise_type, promise_value)',
+          )
+          .eq('financier_id', profile.id),
+      ])
+      if (pfRes.error) toast.error(pfRes.error.message)
+      if (budgetRes.error) toast.error(budgetRes.error.message)
+      setRows((pfRes.data as ProjectFinancier[]) ?? [])
+
+      const map = new Map<
+        string,
+        { ownCapital: number; manualProfit: number | null; lenders: BudgetLenderInput[] }
+      >()
+      for (const b of (budgetRes.data as FinancierProjectBudget[]) ?? []) {
+        map.set(b.project_id, {
+          ownCapital: toNumber(b.own_capital),
+          manualProfit:
+            b.manual_profit === null || b.manual_profit === undefined ? null : toNumber(b.manual_profit),
+          lenders: (b.financier_project_lenders ?? []).map((l) => ({
+            lender_name: l.lender_name,
+            borrowed_amount: l.borrowed_amount,
+            promise_type: l.promise_type,
+            promise_value: l.promise_value,
+          })),
+        })
+      }
+      setBudgetByProject(map)
+      setLoading(false)
+    })()
   }, [profile])
 
   const chart = rows.map((r) => ({
@@ -1479,6 +1536,83 @@ export function FinancierAnalyticsPage() {
 
   const totalCapital = chart.reduce((s, r) => s + r.capital, 0)
   const totalProfit = chart.reduce((s, r) => s + r.profit, 0)
+
+  const chipInAnalytics = useMemo(() => {
+    type PersonRow = { name: string; capital: number; profit: number; key: string }
+    const byPerson = new Map<string, PersonRow>()
+
+    function addPerson(name: string, capital: number, profit: number) {
+      const label = name.trim() || 'Chip-in'
+      const key = label.toLowerCase()
+      const existing = byPerson.get(key) ?? { name: label, capital: 0, profit: 0, key }
+      existing.capital += capital
+      existing.profit += profit
+      byPerson.set(key, existing)
+    }
+
+    for (const row of rows) {
+      const budget = budgetByProject.get(row.project_id)
+      const myConfirmed = toNumber(row.confirmed_amount)
+      const capitalRequired = toNumber(row.projects?.capital_required)
+      const expectedProfit = toNumber(row.projects?.expected_profit)
+      const expectedShare = budgetBasedProfitShare(myConfirmed, capitalRequired, expectedProfit)
+      const myProfitShare = budget?.manualProfit ?? expectedShare
+      const ownCapital = budget?.ownCapital ?? myConfirmed
+      const lenders = budget?.lenders ?? []
+
+      const summary = calculateBudgetSummary({
+        ownCapital,
+        myConfirmed,
+        myProfitShare,
+        myCapitalReturn: myConfirmed,
+        lenders,
+      })
+
+      addPerson('You', summary.totalOwn, summary.myNetProfit)
+      for (const lender of summary.lenders) {
+        addPerson(lender.lender_name, lender.borrowed_amount, lender.profit_portion ?? 0)
+      }
+    }
+
+    const people = [...byPerson.values()]
+      .filter((p) => p.capital > 0 || p.profit > 0)
+      .sort((a, b) => {
+        if (a.name === 'You') return -1
+        if (b.name === 'You') return 1
+        return b.capital - a.capital
+      })
+
+    const you = people.find((p) => p.name === 'You')
+    const chipIns = people.filter((p) => p.name !== 'You')
+
+    const capitalPie = people
+      .filter((p) => p.capital > 0)
+      .map((p, i) => ({
+        name: p.name,
+        value: p.capital,
+        key: `cap-${p.key}`,
+        color: FINANCIER_COLORS[p.name === 'You' ? 0 : i % FINANCIER_COLORS.length],
+      }))
+
+    const profitPie = people
+      .filter((p) => p.profit > 0)
+      .map((p, i) => ({
+        name: p.name,
+        value: p.profit,
+        key: `profit-${p.key}`,
+        color: FINANCIER_COLORS[p.name === 'You' ? 0 : i % FINANCIER_COLORS.length],
+      }))
+
+    return {
+      people,
+      you,
+      chipIns,
+      capitalPie,
+      profitPie,
+      chipInCapital: chipIns.reduce((s, p) => s + p.capital, 0),
+      chipInProfit: chipIns.reduce((s, p) => s + p.profit, 0),
+    }
+  }, [rows, budgetByProject])
 
   return (
     <div>
@@ -1513,7 +1647,146 @@ export function FinancierAnalyticsPage() {
               )}
             </CardContent>
           </Card>
+
+          <Card className="mt-6">
+            <CardHeader>
+              <CardTitle className="text-base">Budget & chip-in breakdown</CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Who chipped in to your finances, their capital and gain, and your own share.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {rows.length === 0 ? (
+                <EmptyState title="No budget data yet" description="Confirm a finance to see chip-in analytics." />
+              ) : (
+                <>
+                  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                    <KpiCard
+                      label="Your capital"
+                      value={formatPhp(chipInAnalytics.you?.capital ?? 0)}
+                    />
+                    <KpiCard label="Your gain" value={formatPhp(chipInAnalytics.you?.profit ?? 0)} />
+                    <KpiCard label="Chip-in capital" value={formatPhp(chipInAnalytics.chipInCapital)} />
+                    <KpiCard label="Chip-in gain" value={formatPhp(chipInAnalytics.chipInProfit)} />
+                  </div>
+
+                  <div className="grid gap-6 md:grid-cols-2">
+                    <AnalyticsPieSplit
+                      title="Capital mix"
+                      data={chipInAnalytics.capitalPie}
+                      emptyMessage="No capital recorded yet."
+                    />
+                    <AnalyticsPieSplit
+                      title="Gain mix"
+                      data={chipInAnalytics.profitPie}
+                      emptyMessage="No gain allocated yet."
+                    />
+                  </div>
+
+                  <div className="overflow-x-auto rounded-lg border border-border/50">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Person</TableHead>
+                          <TableHead className="text-right">Capital</TableHead>
+                          <TableHead className="text-right">Gain</TableHead>
+                          <TableHead className="text-right">Total to receive</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {chipInAnalytics.people.map((person) => (
+                          <TableRow key={person.key}>
+                            <TableCell className="font-medium">
+                              {person.name}
+                              {person.name === 'You' ? (
+                                <span className="ml-1.5 text-xs font-normal text-muted-foreground">(you)</span>
+                              ) : null}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">{formatPhp(person.capital)}</TableCell>
+                            <TableCell className="text-right tabular-nums text-muted-foreground">
+                              {formatPhp(person.profit)}
+                            </TableCell>
+                            <TableCell className="text-right font-medium tabular-nums">
+                              {formatPhp(totalReceivable(person.capital, person.profit))}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+
+                  {chipInAnalytics.chipIns.length === 0 ? (
+                    <p className="text-center text-sm text-muted-foreground">
+                      No chip-ins recorded yet. Add them on the Budget page to track who funded with you.
+                    </p>
+                  ) : null}
+                </>
+              )}
+            </CardContent>
+          </Card>
         </>
+      )}
+    </div>
+  )
+}
+
+type AnalyticsPieSlice = { name: string; value: number; key: string; color?: string }
+
+function AnalyticsPieSplit({
+  title,
+  data,
+  emptyMessage,
+}: {
+  title: string
+  data: AnalyticsPieSlice[]
+  emptyMessage: string
+}) {
+  return (
+    <div className="rounded-xl border border-border/40 bg-muted/10 p-4">
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
+      {data.length === 0 ? (
+        <p className="flex h-32 items-center justify-center text-center text-sm text-muted-foreground">
+          {emptyMessage}
+        </p>
+      ) : (
+        <div className="flex items-center gap-3">
+          <ul className="min-w-0 flex-1 space-y-1 text-sm">
+            {data.map((entry, i) => {
+              const color = entry.color ?? FINANCIER_COLORS[i % FINANCIER_COLORS.length]
+              return (
+                <li key={entry.key} className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+                    <span className="truncate">{entry.name}</span>
+                  </span>
+                  <span className="shrink-0 tabular-nums text-muted-foreground">{formatPhp(entry.value)}</span>
+                </li>
+              )
+            })}
+          </ul>
+          <div className="h-28 w-28 shrink-0 sm:h-32 sm:w-32">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data}
+                  dataKey="value"
+                  nameKey="name"
+                  innerRadius="52%"
+                  outerRadius="88%"
+                  paddingAngle={data.length > 1 ? 2 : 0}
+                >
+                  {data.map((entry, i) => (
+                    <Cell
+                      key={entry.key}
+                      fill={entry.color ?? FINANCIER_COLORS[i % FINANCIER_COLORS.length]}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip formatter={(v: number) => formatPhp(v)} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
       )}
     </div>
   )
