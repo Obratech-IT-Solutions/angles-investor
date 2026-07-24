@@ -47,6 +47,25 @@ export function formatFinancingDateChip(date: string | null | undefined): string
   return `${Number(m[3])} ${month}`
 }
 
+function financingDateSortKey(date: string | null | undefined): string {
+  if (!date?.trim()) return ''
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date.trim())
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : date.trim()
+}
+
+/** Sort newest financing dates first; undated rows last. */
+export function compareFinancingDatesDesc(
+  a: string | null | undefined,
+  b: string | null | undefined,
+): number {
+  const keyA = financingDateSortKey(a)
+  const keyB = financingDateSortKey(b)
+  if (!keyA && !keyB) return 0
+  if (!keyA) return 1
+  if (!keyB) return -1
+  return keyB.localeCompare(keyA)
+}
+
 /** Known team financiers — stable brand colors. */
 const FINANCIER_NAME_COLORS: Record<string, string> = {
   JERWIN: '#1f7a4d',

@@ -37,6 +37,7 @@ import {
   FINANCIER_COLORS,
   financingDateChipColors,
   formatFinancingDateChip,
+  compareFinancingDatesDesc,
   budgetPoolBorderColors,
   budgetPoolColorIndexFromId,
   budgetPoolLeftBorderColors,
@@ -147,6 +148,14 @@ function applyPoolProfitSplits(
 }
 
 type PieSlice = { name: string; value: number; key: string; color?: string }
+
+function sortBudgetRowsByDate<T extends { financingDate: string | null; projectName: string }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const byDate = compareFinancingDatesDesc(a.financingDate, b.financingDate)
+    if (byDate !== 0) return byDate
+    return a.projectName.localeCompare(b.projectName)
+  })
+}
 
 function BudgetPieSplit({
   title,
@@ -418,7 +427,7 @@ export function FinancierBudgetListPage() {
         }
       })
 
-    setRows(list)
+    setRows(sortBudgetRowsByDate(list))
     setSelectedIds((prev) => prev.filter((id) => list.some((r) => r.projectId === id)))
     setLoading(false)
   }, [profile])
@@ -432,7 +441,10 @@ export function FinancierBudgetListPage() {
   }, [q])
 
   const filtered = useMemo(
-    () => rows.filter((r) => !q || r.projectName.toLowerCase().includes(q.toLowerCase())),
+    () =>
+      sortBudgetRowsByDate(
+        rows.filter((r) => !q || r.projectName.toLowerCase().includes(q.toLowerCase())),
+      ),
     [rows, q],
   )
   const paged = useMemo(() => paginateRows(filtered, page, BUDGET_LIST_PAGE_SIZE), [filtered, page])
@@ -444,11 +456,13 @@ export function FinancierBudgetListPage() {
 
   const pickerRows = useMemo(
     () =>
-      rows.filter(
-        (r) =>
-          !pickerQ ||
-          r.projectName.toLowerCase().includes(pickerQ.toLowerCase()) ||
-          (r.financingDate ?? '').includes(pickerQ),
+      sortBudgetRowsByDate(
+        rows.filter(
+          (r) =>
+            !pickerQ ||
+            r.projectName.toLowerCase().includes(pickerQ.toLowerCase()) ||
+            (r.financingDate ?? '').includes(pickerQ),
+        ),
       ),
     [rows, pickerQ],
   )
