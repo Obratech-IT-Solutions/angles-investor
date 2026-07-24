@@ -42,7 +42,7 @@ import {
   toNumber,
   totalReceivable,
 } from '@/lib/money'
-import { commitmentStatusVariant, financeAllowsCapitalCommitment, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
+import { commitmentStatusVariant, financeAllowsFundingDecision, financeFundingDeadlineOpen, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
 import { budgetPoolBorderColors, budgetPoolColorIndexFromId, budgetPoolLeftBorderColors, financingDateChipColors, formatFinancingDateChip, FINANCIER_COLORS } from '@/lib/financierColors'
 import { calculateBudgetSummary, type BudgetLenderInput } from '@/lib/budget'
 import { supabase } from '@/lib/supabase'
@@ -230,7 +230,8 @@ function rowDisplayTotal(row: ProjectFinancier): number {
 
 function rowCanDecide(row: ProjectFinancier): boolean {
   const status = row.projects?.status
-  return financeAllowsCapitalCommitment(status ?? '') && row.commitment_status !== 'withdrawn'
+  const financingDate = row.projects?.financing_date
+  return financeAllowsFundingDecision(status ?? '', financingDate) && row.commitment_status !== 'withdrawn'
 }
 
 function FinancierRowActionButton({
@@ -764,9 +765,10 @@ export function FinancierDashboardPage() {
   const needsFinance = useMemo(
     () =>
       rows.filter((r) => {
-        const isOpen =
-          r.projects?.status === 'open_for_funding' || r.projects?.status === 'partially_funded'
-        return isOpen && r.commitment_status !== 'confirmed'
+        return (
+          financeAllowsFundingDecision(r.projects?.status ?? '', r.projects?.financing_date) &&
+          r.commitment_status !== 'confirmed'
+        )
       }),
     [rows],
   )
@@ -1044,7 +1046,8 @@ export function FinancierProjectDetailPage() {
   const unchanged =
     row.commitment_status === 'confirmed' && hasValidNumber && Math.abs(enteredAmount - myConfirmed) < 0.01
   const myName = profile?.full_name ?? 'You'
-  const isOpen = financeAllowsCapitalCommitment(project.status)
+  const isOpen = financeAllowsFundingDecision(project.status, project.financing_date)
+  const fundingDeadlinePassed = !financeFundingDeadlineOpen(project.financing_date)
   const isConfirmed = row.commitment_status === 'confirmed'
   const canAct = isOpen && row.commitment_status !== 'withdrawn'
   const isRejected = row.commitment_status === 'rejected'
@@ -1186,6 +1189,11 @@ export function FinancierProjectDetailPage() {
             ) : isRejected ? (
               <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
                 You rejected this finance. You can still accept if you change your mind.
+              </p>
+            ) : fundingDeadlinePassed ? (
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
+                Funding confirmation closed. The financing date ({project.financing_date}) has been reached — confirm
+                before that date when a finance is posted.
               </p>
             ) : null}
 

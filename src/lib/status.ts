@@ -5,6 +5,24 @@ export function financeAllowsCapitalCommitment(status: ProjectStatus | string): 
   return status === 'open_for_funding' || status === 'partially_funded'
 }
 
+/** True while today is still before the financing start date (confirm-by deadline). */
+export function financeFundingDeadlineOpen(financingDate: string | null | undefined, now = new Date()): boolean {
+  if (!financingDate?.trim()) return true
+  const start = new Date(`${financingDate.trim()}T00:00:00`)
+  if (Number.isNaN(start.getTime())) return true
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  return today < start
+}
+
+/** Financiers may confirm or change funding only before the financing date. */
+export function financeAllowsFundingDecision(
+  status: ProjectStatus | string,
+  financingDate: string | null | undefined,
+): boolean {
+  return financeAllowsCapitalCommitment(status) && financeFundingDeadlineOpen(financingDate)
+}
+
 export function projectStatusVariant(
   status: ProjectStatus,
 ): 'default' | 'secondary' | 'outline' | 'success' | 'warning' | 'destructive' {

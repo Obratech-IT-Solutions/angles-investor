@@ -30,7 +30,7 @@ import {
   toNumber,
   totalReceivable,
 } from '@/lib/money'
-import { commitmentStatusVariant, financeAllowsCapitalCommitment, projectStatusClassName, projectStatusVariant } from '@/lib/status'
+import { commitmentStatusVariant, financeAllowsFundingDecision, financeFundingDeadlineOpen, projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -383,7 +383,8 @@ export function FinanceDetailDialog({
     mode === 'financier' && myReleasePayment && releaseIsLive && !myReleasePayment.received_at,
   )
 
-  const financeIsOpen = financeAllowsCapitalCommitment(project.status)
+  const financeIsOpen = financeAllowsFundingDecision(project.status, project.financing_date)
+  const fundingDeadlinePassed = !financeFundingDeadlineOpen(project.financing_date)
   const isGroupFinance = Boolean(project.group_id)
   const canManageCommitment = Boolean(
     mode === 'financier' &&
@@ -894,8 +895,18 @@ export function FinanceDetailDialog({
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Your commitment</p>
               <p className="mt-2 text-2xl font-bold tabular-nums text-primary">{formatPhp(myConfirmedAmount)}</p>
               <p className="mt-2 text-xs text-muted-foreground">
-                This finance is {PROJECT_STATUS_LABELS[project.status] ?? project.status} — capital can no longer be
-                changed.
+                {fundingDeadlinePassed
+                  ? `Funding confirmation closed — financing date was ${project.financing_date}.`
+                  : `This finance is ${PROJECT_STATUS_LABELS[project.status] ?? project.status} — capital can no longer be changed.`}
+              </p>
+            </div>
+          ) : null}
+
+          {mode === 'financier' && myRow && !canManageCommitment && !isConfirmedCommitment && fundingDeadlinePassed ? (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+              <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+                Funding confirmation closed. The financing date ({project.financing_date}) has been reached — you can
+                no longer confirm for this finance.
               </p>
             </div>
           ) : null}

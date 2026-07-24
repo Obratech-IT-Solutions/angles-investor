@@ -26,7 +26,7 @@ import {
   moneyInputFromValue,
   toNumber,
 } from '@/lib/money'
-import { financeAllowsCapitalCommitment, projectStatusClassName, projectStatusVariant } from '@/lib/status'
+import { financeAllowsFundingDecision, financeFundingDeadlineOpen, projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -127,7 +127,10 @@ export function GroupCommitmentDialog({
 
   const profitTotal = groupProfitShare(hasValid ? entered : 0, groupBudget, groupProfit)
   const progress = fundingProgress(groupConfirmed, groupBudget)
-  const allOpen = lines.every((l) => financeAllowsCapitalCommitment(l.status))
+  const allOpen = lines.every((l) => financeAllowsFundingDecision(l.status, summary?.financing_date))
+  const fundingDeadlinePassed = summary?.financing_date
+    ? !financeFundingDeadlineOpen(summary.financing_date)
+    : false
   const canAct = allOpen && lines.length >= 2
   const isRejected = lines.every((l) => l.my_status === 'rejected')
   const isConfirmed = myPrevious > 0 && !isRejected
@@ -359,6 +362,12 @@ export function GroupCommitmentDialog({
                   <p className="rounded-lg border border-dashed px-3 py-4 text-sm text-muted-foreground">
                     You confirmed {formatPhp(myPrevious)} for this batch. Update your amount or cancel if you change
                     your mind.
+                  </p>
+                ) : null}
+
+                {fundingDeadlinePassed && !canAct ? (
+                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-4 text-sm text-amber-900 dark:text-amber-200">
+                    Funding confirmation closed. The financing date ({summary?.financing_date}) has been reached.
                   </p>
                 ) : null}
               </>

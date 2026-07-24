@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowLeft, CheckSquare, Plus, Trash2, Wallet } from 'lucide-react'
@@ -20,7 +20,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuth } from '@/contexts/AuthContext'
-import { calculateBudgetSummary, distributeProportionalAmounts, splitAmountAcrossShares, splitProfitByCapitalShares } from '@/lib/budget'
+import { calculateBudgetSummary, computeProfitSplits, distributeProportionalAmounts, redistributeProfitSplits, splitAmountAcrossShares, type ProfitSplitParty } from '@/lib/budget'
 import {
   dissolveBudgetPool,
   distributeBudgetsAcrossProjects,
@@ -61,6 +61,89 @@ function lenderAmountInputValue(value: number | string | null | undefined): stri
   if (value === null || value === undefined || value === '') return ''
   if (value === 0 || value === '0') return ''
   return formatMoneyInput(String(value).replace(/,/g, ''))
+}
+
+function profitInputFromAmount(amount: number): string {
+  return amount > 0 ? moneyInputFromValue(amount) : ''
+}
+
+function buildPoolProfitParties(
+  ownCapital: string | number,
+  chipIns: LenderDraft[],
+  locks: Set<string>,
+): ProfitSplitParty[] {
+  return [
+    {
+      key: 'own',
+      capital: toNumber(ownCapital),
+      locked: locks.has('own'),
+      profit: undefined,
+    },
+    ...chipIns.map((l) => ({
+      key: l.clientKey,
+      capital: toNumber(l.borrowed_amount),
+      locked: locks.has(l.clientKey),
+      profit: l.promise_value,
+    })),
+  ]
+}
+
+function applyDetailProfitSplits(
+  parts: Map<string, number>,
+  totalPool: number,
+  setManualProfit: (value: string) => void,
+  setLenders: Dispatch<SetStateAction<LenderDraft[]>>,
+  preservePoolInput?: string,
+) {
+  setManualProfit(preservePoolInput ?? profitInputFromAmount(totalPool))
+  setLenders((prev) => {
+    let changed = false
+    const next = prev.map((l) => {
+      const profit = parts.get(l.clientKey) ?? 0
+      const nextVal = profitInputFromAmount(profit)
+      if (String(l.promise_value ?? '') === nextVal && l.promise_type === 'fixed_profit') return l
+      changed = true
+      return { ...l, promise_value: nextVal, promise_type: 'fixed_profit' as const }
+    })
+    return changed ? next : prev
+  })
+}
+
+function buildDetailProfitParties(
+  ownCapital: string | number,
+  lenders: LenderDraft[],
+  locks: Set<string>,
+): ProfitSplitParty[] {
+  return [
+    { key: 'own', capital: toNumber(ownCapital), locked: locks.has('own') },
+    ...lenders.map((l) => ({
+      key: l.clientKey,
+      capital: toNumber(l.borrowed_amount),
+      locked: locks.has(l.clientKey),
+      profit: l.promise_value,
+    })),
+  ]
+}
+
+function applyPoolProfitSplits(
+  parts: Map<string, number>,
+  setTotalProfit: (value: string) => void,
+  setPoolChipIns: Dispatch<SetStateAction<LenderDraft[]>>,
+  preserveOwnInput?: string,
+) {
+  const own = parts.get('own') ?? 0
+  setTotalProfit(preserveOwnInput ?? profitInputFromAmount(own))
+  setPoolChipIns((prev) => {
+    let changed = false
+    const next = prev.map((l) => {
+      const profit = parts.get(l.clientKey) ?? 0
+      const nextVal = profitInputFromAmount(profit)
+      if (String(l.promise_value ?? '') === nextVal) return l
+      changed = true
+      return { ...l, promise_value: nextVal }
+    })
+    return changed ? next : prev
+  })
 }
 
 type PieSlice = { name: string; value: number; key: string; color?: string }
@@ -221,7 +304,7 @@ export function FinancierBudgetListPage() {
   const [totalProfit, setTotalProfit] = useState('')
   const [poolChipIns, setPoolChipIns] = useState<LenderDraft[]>([])
   const [distributing, setDistributing] = useState(false)
-  const [profitEdited, setProfitEdited] = useState(false)
+  const profitLocksRef = useRef<Set<string>>(new Set())
   const chipInListRef = useRef<HTMLDivElement | null>(null)
 
   const loadRows = useCallback(async () => {
@@ -457,11 +540,10 @@ export function FinancierBudgetListPage() {
       capitalSigRef.current = capitalSignature
       if (keepLoadedProfitsRef.current) {
         keepLoadedProfitsRef.current = false
-        setProfitEdited(true)
         return
       }
-      if (profitEdited) setProfitEdited(false)
-    } else if (profitEdited) {
+      profitLocksRef.current = new Set()
+    } else if (profitLocksRef.current.size > 0) {
       return
     }
 
@@ -474,41 +556,18 @@ export function FinancierBudgetListPage() {
       return
     }
 
-    const parties: Array<{ key: string; capital: number }> = [
-      { key: 'own', capital: toNumber(totalOwn) },
-      ...poolChipIns.map((l) => ({
-        key: l.clientKey,
-        capital: toNumber(l.borrowed_amount),
-      })),
-    ]
-
-    // Use pool budget max as base so 20k of 75k → ~26.7% of profit — not 100%.
-    const parts = splitProfitByCapitalShares({
+    const parts = computeProfitSplits({
       totalProfitPool: poolProfitMax,
       capitalBase: poolBudgetMax > 0 ? poolBudgetMax : undefined,
-      parties,
+      parties: buildPoolProfitParties(totalOwn, poolChipIns, profitLocksRef.current),
     })
 
-    const nextOwn =
-      toNumber(totalOwn) > 0 ? moneyInputFromValue(parts.get('own') ?? 0) : ''
-    setTotalProfit((prev) => (prev === nextOwn ? prev : nextOwn))
-    setPoolChipIns((prev) => {
-      let changed = false
-      const next = prev.map((l) => {
-        const amount = toNumber(l.borrowed_amount)
-        const profit = amount > 0 ? moneyInputFromValue(parts.get(l.clientKey) ?? 0) : ''
-        if (String(l.promise_value ?? '') === profit) return l
-        changed = true
-        return { ...l, promise_value: profit }
-      })
-      return changed ? next : prev
-    })
+    applyPoolProfitSplits(parts, setTotalProfit, setPoolChipIns)
   }, [
     selectedRows.length,
     poolProfitMax,
     poolBudgetMax,
     capitalSignature,
-    profitEdited,
     totalOwn,
     poolChipIns,
   ])
@@ -653,7 +712,31 @@ export function FinancierBudgetListPage() {
   )
 
   function updatePoolChipIn(clientKey: string, patch: Partial<LenderDraft>) {
-    if (patch.promise_value !== undefined) setProfitEdited(true)
+    if (patch.borrowed_amount !== undefined) {
+      profitLocksRef.current = new Set()
+      setPoolChipIns((prev) => prev.map((l) => (l.clientKey === clientKey ? { ...l, ...patch } : l)))
+      return
+    }
+    if (patch.promise_value !== undefined && poolProfitMax > 0) {
+      profitLocksRef.current = new Set([clientKey])
+      const parts = redistributeProfitSplits({
+        totalProfitPool: poolProfitMax,
+        capitalBase: poolBudgetMax > 0 ? poolBudgetMax : undefined,
+        parties: buildPoolProfitParties(totalOwn, poolChipIns, new Set()),
+        editedKey: clientKey,
+        editedProfit: toNumber(patch.promise_value),
+      })
+      setPoolChipIns((prev) =>
+        prev.map((l) => {
+          if (l.clientKey === clientKey) return { ...l, ...patch }
+          const profit = parts.get(l.clientKey) ?? 0
+          return { ...l, promise_value: profitInputFromAmount(profit) }
+        }),
+      )
+      const own = parts.get('own') ?? 0
+      setTotalProfit(profitInputFromAmount(own))
+      return
+    }
     setPoolChipIns((prev) => prev.map((l) => (l.clientKey === clientKey ? { ...l, ...patch } : l)))
   }
 
@@ -669,12 +752,24 @@ export function FinancierBudgetListPage() {
   }
 
   function setOwnAmount(value: string) {
+    profitLocksRef.current = new Set()
     setTotalOwn(value)
   }
 
   function setYourProfit(value: string) {
-    setProfitEdited(true)
-    setTotalProfit(value)
+    if (poolProfitMax <= 0) {
+      setTotalProfit(value)
+      return
+    }
+    profitLocksRef.current = new Set(['own'])
+    const parts = redistributeProfitSplits({
+      totalProfitPool: poolProfitMax,
+      capitalBase: poolBudgetMax > 0 ? poolBudgetMax : undefined,
+      parties: buildPoolProfitParties(totalOwn, poolChipIns, new Set()),
+      editedKey: 'own',
+      editedProfit: toNumber(value),
+    })
+    applyPoolProfitSplits(parts, setTotalProfit, setPoolChipIns, value)
   }
 
   function openPicker() {
@@ -722,7 +817,6 @@ export function FinancierBudgetListPage() {
         }
       }
       keepLoadedProfitsRef.current = true
-      setProfitEdited(true)
       setPoolChipIns(
         [...merged.values()].map((c, i) => ({
           ...emptyLenderDraft(i),
@@ -758,8 +852,8 @@ export function FinancierBudgetListPage() {
   function clearAllocateAmounts() {
     capitalSigRef.current = ''
     keepLoadedProfitsRef.current = false
+    profitLocksRef.current = new Set()
     setPoolChipIns([])
-    setProfitEdited(false)
     setTotalOwn('')
     setTotalProfit('')
   }
@@ -915,7 +1009,7 @@ export function FinancierBudgetListPage() {
     setTotalOwn('')
     setTotalProfit('')
     setPoolChipIns([])
-    setProfitEdited(false)
+    profitLocksRef.current = new Set()
   }
 
   function openChangeSelection() {
@@ -1709,6 +1803,9 @@ export function FinancierBudgetDetailPage() {
   const [manualProfit, setManualProfit] = useState('')
   const [notes, setNotes] = useState('')
   const [lenders, setLenders] = useState<LenderDraft[]>([])
+  const profitLocksRef = useRef<Set<string>>(new Set())
+  const capitalSigRef = useRef('')
+  const skipAutoProfitRef = useRef(false)
 
   useEffect(() => {
     if (!profile || !projectId) return
@@ -1773,6 +1870,9 @@ export function FinancierBudgetDetailPage() {
           )
           setNotes(budget.notes ?? '')
           setLenders(lendersToDrafts(budget.financier_project_lenders ?? []))
+          skipAutoProfitRef.current = (budget.financier_project_lenders ?? []).some(
+            (l) => toNumber(l.promise_value) > 0,
+          )
         } else {
           setBudgetId(null)
           const confirmed = toNumber(pf.confirmed_amount)
@@ -1797,6 +1897,7 @@ export function FinancierBudgetDetailPage() {
 
   const expectedProfit = toNumber(project?.expected_profit)
   const expectedShare = budgetBasedProfitShare(myConfirmed, toNumber(project?.capital_required), expectedProfit)
+  const profitPoolMax = releasedProfit !== null ? releasedProfit : expectedShare
   const manualProfitDraft = manualProfit.trim()
   const manualProfitEntered = manualProfitDraft !== ''
   const myProfitShare =
@@ -1806,6 +1907,48 @@ export function FinancierBudgetDetailPage() {
         ? toNumber(manualProfit)
         : expectedShare
   const myCapitalReturn = releasedCapital !== null ? releasedCapital : myConfirmed
+
+  const capitalSignature = useMemo(
+    () => `${ownCapital}|${lenders.map((l) => `${l.clientKey}:${String(l.borrowed_amount)}`).join('|')}`,
+    [ownCapital, lenders],
+  )
+
+  useEffect(() => {
+    if (releasedProfit !== null || profitPoolMax <= 0) return
+
+    const capitalChanged = capitalSignature !== capitalSigRef.current
+    if (capitalChanged) {
+      capitalSigRef.current = capitalSignature
+      if (skipAutoProfitRef.current) {
+        skipAutoProfitRef.current = false
+        return
+      }
+      profitLocksRef.current = new Set()
+    } else if (profitLocksRef.current.size > 0) {
+      return
+    }
+
+    const hasCapital = toNumber(ownCapital) > 0 || lenders.some((l) => toNumber(l.borrowed_amount) > 0)
+    if (!hasCapital) return
+
+    const totalPool = manualProfitEntered ? toNumber(manualProfit) : profitPoolMax
+    const parts = computeProfitSplits({
+      totalProfitPool: totalPool,
+      capitalBase: myConfirmed > 0 ? myConfirmed : undefined,
+      parties: buildDetailProfitParties(ownCapital, lenders, profitLocksRef.current),
+    })
+
+    applyDetailProfitSplits(parts, totalPool, setManualProfit, setLenders)
+  }, [
+    capitalSignature,
+    profitPoolMax,
+    myConfirmed,
+    releasedProfit,
+    ownCapital,
+    lenders,
+    manualProfitEntered,
+    manualProfit,
+  ])
 
   const profitSource: 'released' | 'manual' | 'expected' =
     releasedProfit !== null ? 'released' : manualProfitEntered ? 'manual' : 'expected'
@@ -1865,7 +2008,53 @@ export function FinancierBudgetDetailPage() {
   }, [summary])
 
   function updateLender(clientKey: string, patch: Partial<LenderDraft>) {
+    if (patch.borrowed_amount !== undefined) {
+      profitLocksRef.current = new Set()
+      setLenders((prev) => prev.map((l) => (l.clientKey === clientKey ? { ...l, ...patch } : l)))
+      return
+    }
+    if (patch.promise_value !== undefined && releasedProfit === null) {
+      const pool = manualProfitEntered ? toNumber(manualProfit) : profitPoolMax
+      if (pool > 0) {
+        profitLocksRef.current = new Set([clientKey])
+        const parts = redistributeProfitSplits({
+          totalProfitPool: pool,
+          capitalBase: myConfirmed > 0 ? myConfirmed : undefined,
+          parties: buildDetailProfitParties(ownCapital, lenders, new Set()),
+          editedKey: clientKey,
+          editedProfit: toNumber(patch.promise_value),
+        })
+        setLenders((prev) =>
+          prev.map((l) => {
+            if (l.clientKey === clientKey) {
+              return { ...l, ...patch, promise_type: 'fixed_profit' as const }
+            }
+            const profit = parts.get(l.clientKey) ?? 0
+            return { ...l, promise_value: profitInputFromAmount(profit), promise_type: 'fixed_profit' as const }
+          }),
+        )
+        return
+      }
+    }
     setLenders((prev) => prev.map((l) => (l.clientKey === clientKey ? { ...l, ...patch } : l)))
+  }
+
+  function handleOwnCapitalChange(value: string) {
+    profitLocksRef.current = new Set()
+    setOwnCapital(value)
+  }
+
+  function handleManualProfitChange(value: string) {
+    if (releasedProfit !== null) return
+    const newPool = toNumber(value)
+    profitLocksRef.current = new Set()
+    const pool = newPool > 0 ? newPool : profitPoolMax
+    const parts = computeProfitSplits({
+      totalProfitPool: pool,
+      capitalBase: myConfirmed > 0 ? myConfirmed : undefined,
+      parties: buildDetailProfitParties(ownCapital, lenders, new Set()),
+    })
+    applyDetailProfitSplits(parts, pool, setManualProfit, setLenders, value)
   }
 
   function removeLender(clientKey: string) {
@@ -2029,7 +2218,7 @@ export function FinancierBudgetDetailPage() {
                 <MoneyInput
                   id="own_capital"
                   value={ownCapital}
-                  onValueChange={setOwnCapital}
+                  onValueChange={handleOwnCapitalChange}
                   placeholder="0"
                 />
               </div>
@@ -2038,14 +2227,16 @@ export function FinancierBudgetDetailPage() {
                 <MoneyInput
                   id="manual_profit"
                   value={manualProfit}
-                  onValueChange={setManualProfit}
-                  placeholder={releasedProfit !== null ? undefined : 'Expected share if empty'}
+                  onValueChange={handleManualProfitChange}
+                  placeholder={releasedProfit !== null ? undefined : profitInputFromAmount(profitPoolMax) || 'Expected share if empty'}
                   disabled={releasedProfit !== null}
                 />
                 {releasedProfit !== null ? (
                   <p className="text-xs text-muted-foreground">Released profit is locked.</p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Your profit from this finance.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Auto-fills from your budget share. Edit to override — chip-in profits adjust to match.
+                  </p>
                 )}
               </div>
             </div>
@@ -2115,7 +2306,7 @@ export function FinancierBudgetDetailPage() {
                         />
                       </div>
                     </div>
-                    <p className="text-xs text-muted-foreground">Profit is up to you — set what you will share with them.</p>
+                    <p className="text-xs text-muted-foreground">Auto from budget share — edit to override; others adjust.</p>
                   </div>
                 ))}
                 </div>

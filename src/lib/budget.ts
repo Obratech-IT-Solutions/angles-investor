@@ -216,6 +216,81 @@ function roundMoney(n: number): number {
   return Math.round((Number.isFinite(n) ? n : 0) * 100) / 100
 }
 
+export type ProfitSplitParty = {
+  key: string
+  capital: number
+  profit?: number | string
+  locked?: boolean
+}
+
+/**
+ * Split profit among parties by capital share. Locked parties keep their profit;
+ * unlocked parties share the remainder proportionally.
+ */
+export function computeProfitSplits(input: {
+  totalProfitPool: number
+  parties: ProfitSplitParty[]
+  /** Total budget max to measure % against (gap stays unallocated). */
+  capitalBase?: number
+}): Map<string, number> {
+  const pool = roundMoney(input.totalProfitPool)
+  const result = new Map<string, number>()
+  if (input.parties.length === 0) return result
+
+  if (pool <= 0) {
+    for (const p of input.parties) result.set(p.key, 0)
+    return result
+  }
+
+  const locked = input.parties.filter((p) => p.locked)
+  const lockedSum = roundMoney(locked.reduce((s, p) => s + roundMoney(toNumber(p.profit ?? 0)), 0))
+  const remaining = roundMoney(pool - lockedSum)
+  const unlocked = input.parties.filter((p) => !p.locked)
+
+  for (const p of locked) {
+    result.set(p.key, roundMoney(toNumber(p.profit ?? 0)))
+  }
+
+  if (unlocked.length === 0) {
+    for (const p of input.parties) {
+      if (!result.has(p.key)) result.set(p.key, 0)
+    }
+    return result
+  }
+
+  const unlockedParts = splitProfitByCapitalShares({
+    totalProfitPool: Math.max(0, remaining),
+    capitalBase: input.capitalBase,
+    parties: unlocked.map((p) => ({ key: p.key, capital: p.capital })),
+  })
+
+  for (const p of unlocked) {
+    result.set(p.key, unlockedParts.get(p.key) ?? 0)
+  }
+
+  return result
+}
+
+/** Lock one party's profit and redistribute the remainder among the others. */
+export function redistributeProfitSplits(input: {
+  totalProfitPool: number
+  parties: ProfitSplitParty[]
+  capitalBase?: number
+  editedKey: string
+  editedProfit: number
+}): Map<string, number> {
+  const parties = input.parties.map((p) =>
+    p.key === input.editedKey
+      ? { ...p, profit: roundMoney(input.editedProfit), locked: true }
+      : p,
+  )
+  return computeProfitSplits({
+    totalProfitPool: input.totalProfitPool,
+    capitalBase: input.capitalBase,
+    parties,
+  })
+}
+
 /** Split one pool-level chip-in person's amount/profit across finance shares by weightRatio. */
 export function splitAmountAcrossShares(
   total: number,

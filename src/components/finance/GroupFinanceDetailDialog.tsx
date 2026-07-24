@@ -32,7 +32,8 @@ import {
 } from '@/lib/money'
 import {
   commitmentStatusVariant,
-  financeAllowsCapitalCommitment,
+  financeAllowsFundingDecision,
+  financeFundingDeadlineOpen,
   projectStatusClassName,
   projectStatusVariant,
 } from '@/lib/status'
@@ -276,8 +277,12 @@ export function GroupFinanceDetailDialog({
     [financiers, financierColorMap],
   )
 
-  const lineAllowsCommitment = (status: string) => financeAllowsCapitalCommitment(status)
+  const lineAllowsCommitment = (status: string) =>
+    financeAllowsFundingDecision(status, summary?.financing_date)
 
+  const fundingDeadlinePassed = summary?.financing_date
+    ? !financeFundingDeadlineOpen(summary.financing_date)
+    : false
   const batchOpenForCommitment = lines.every((l) => lineAllowsCommitment(l.status))
   const canAct =
     batchOpenForCommitment &&
@@ -633,6 +638,11 @@ export function GroupFinanceDetailDialog({
                 ) : myConfirmed > 0 ? (
                   <p className="mt-3 text-xs text-muted-foreground">
                     This batch is no longer open for fund changes.
+                  </p>
+                ) : fundingDeadlinePassed ? (
+                  <p className="mt-3 text-xs text-amber-800 dark:text-amber-200">
+                    Funding confirmation closed — financing date was {summary?.financing_date}. Confirm before that
+                    date when a new batch is posted.
                   </p>
                 ) : null}
               </div>
