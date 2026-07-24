@@ -653,6 +653,46 @@ function rowExpectedProfit(row: ProjectFinancier): number {
   return rowDisplayProfit(row)
 }
 
+function computeFinancierPortfolioStats(
+  rows: ProjectFinancier[],
+  payments: FinancierReleasePayment[] = [],
+): {
+  confirmedCapital: number
+  profitReceived: number
+  profitToReceive: number
+  totalExpectedProfit: number
+  assignedCount: number
+} {
+  const confirmed = rows.filter((r) => r.commitment_status === 'confirmed')
+  const confirmedCapital = confirmed.reduce((s, r) => s + toNumber(r.confirmed_amount), 0)
+  const profitPaidByCommitment = new Map(
+    payments.map((p) => [p.project_financier_id, toNumber(p.profit_amount)]),
+  )
+
+  let profitReceived = 0
+  let profitToReceive = 0
+  for (const r of confirmed) {
+    const expected = rowExpectedProfit(r)
+    const paid = profitPaidByCommitment.get(r.id)
+    const status = r.projects?.status
+    if (paid != null && paid > 0) {
+      profitReceived += paid
+    } else if (status === 'released' || status === 'completed') {
+      profitReceived += expected
+    } else {
+      profitToReceive += expected
+    }
+  }
+
+  return {
+    confirmedCapital,
+    profitReceived,
+    profitToReceive,
+    totalExpectedProfit: profitReceived + profitToReceive,
+    assignedCount: rows.length,
+  }
+}
+
 export function FinancierDashboardPage() {
   const { profile } = useAuth()
   const [rows, setRows] = useState<ProjectFinancier[]>([])
@@ -696,27 +736,7 @@ export function FinancierDashboardPage() {
   }, [profile, reloadDashboard])
 
   const stats = useMemo(() => {
-    const confirmed = rows.filter((r) => r.commitment_status === 'confirmed')
-    const deployed = confirmed.reduce((s, r) => s + toNumber(r.confirmed_amount), 0)
-
-    const profitPaidByCommitment = new Map(
-      payments.map((p) => [p.project_financier_id, toNumber(p.profit_amount)]),
-    )
-
-    let profitReceived = 0
-    let profitToReceive = 0
-    for (const r of confirmed) {
-      const expected = rowExpectedProfit(r)
-      const paid = profitPaidByCommitment.get(r.id)
-      const status = r.projects?.status
-      if (paid != null && paid > 0) {
-        profitReceived += paid
-      } else if (status === 'released' || status === 'completed') {
-        profitReceived += expected
-      } else {
-        profitToReceive += expected
-      }
-    }
+    const portfolio = computeFinancierPortfolioStats(rows, payments)
 
     const byStatus = Object.entries(
       rows.reduce<Record<string, number>>((acc, r) => {
@@ -729,11 +749,20 @@ export function FinancierDashboardPage() {
       count,
       key: status,
     }))
-    const capitalByProject = confirmed.map((r) => ({
-      name: (r.projects?.name ?? 'Finance').slice(0, 14),
-      capital: toNumber(r.confirmed_amount),
-    }))
-    return { deployed, profitReceived, profitToReceive, byStatus, capitalByProject, count: rows.length }
+    const capitalByProject = rows
+      .filter((r) => r.commitment_status === 'confirmed')
+      .map((r) => ({
+        name: (r.projects?.name ?? 'Finance').slice(0, 14),
+        capital: toNumber(r.confirmed_amount),
+      }))
+    return {
+      deployed: portfolio.confirmedCapital,
+      profitReceived: portfolio.profitReceived,
+      profitToReceive: portfolio.profitToReceive,
+      byStatus,
+      capitalByProject,
+      count: portfolio.assignedCount,
+    }
   }, [rows, payments])
 
   const needsFinance = useMemo(
@@ -1474,6 +1503,7 @@ export function FinancierReleasesPage() {
 export function FinancierAnalyticsPage() {
   const { profile } = useAuth()
   const [rows, setRows] = useState<ProjectFinancier[]>([])
+  const [payments, setPayments] = useState<FinancierReleasePayment[]>([])
   const [budgetByProject, setBudgetByProject] = useState<
     Map<
       string,
@@ -1489,10 +1519,12 @@ export function FinancierAnalyticsPage() {
   useEffect(() => {
     if (!profile) return
     void (async () => {
-      const [pfRes, budgetRes] = await Promise.all([
+      const [pfRes, budgetRes, payRes] = await Promise.all([
         supabase
           .from('project_financiers')
-          .select('*, projects:project_id(id, name, status, capital_required, expected_profit)')
+          .select(
+            '*, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, group_id)',
+          )
           .eq('financier_id', profile.id)
           .eq('commitment_status', 'confirmed'),
         supabase
@@ -1501,10 +1533,16 @@ export function FinancierAnalyticsPage() {
             'project_id, own_capital, manual_profit, financier_project_lenders(lender_name, borrowed_amount, promise_type, promise_value)',
           )
           .eq('financier_id', profile.id),
+        supabase
+          .from('financier_release_payments')
+          .select('*, project_financiers!inner(financier_id), project_releases(*)')
+          .eq('project_financiers.financier_id', profile.id),
       ])
       if (pfRes.error) toast.error(pfRes.error.message)
       if (budgetRes.error) toast.error(budgetRes.error.message)
-      setRows((pfRes.data as ProjectFinancier[]) ?? [])
+      if (payRes.error) toast.error(payRes.error.message)
+      setRows(await normalizeFinancierRows((pfRes.data as ProjectFinancier[]) ?? []))
+      setPayments((payRes.data as FinancierReleasePayment[]) ?? [])
 
       const map = new Map<
         string,
@@ -1528,14 +1566,16 @@ export function FinancierAnalyticsPage() {
     })()
   }, [profile])
 
+  const portfolio = useMemo(
+    () => computeFinancierPortfolioStats(rows, payments),
+    [rows, payments],
+  )
+
   const chart = rows.map((r) => ({
     name: (r.projects?.name ?? 'P').slice(0, 12),
     capital: toNumber(r.confirmed_amount),
-    profit: toNumber(r.projects?.expected_profit) * toNumber(r.confirmed_percentage),
+    profit: rowDisplayProfit(r),
   }))
-
-  const totalCapital = chart.reduce((s, r) => s + r.capital, 0)
-  const totalProfit = chart.reduce((s, r) => s + r.profit, 0)
 
   const chipInAnalytics = useMemo(() => {
     type PersonRow = { name: string; capital: number; profit: number; key: string }
@@ -1616,15 +1656,22 @@ export function FinancierAnalyticsPage() {
 
   return (
     <div>
-      <PageHeader title="Analytics" description="Personal capital and expected profit." />
+      <PageHeader
+        title="Analytics"
+        description="Same totals as your dashboard, with charts and chip-in breakdown."
+      />
       {loading ? (
         <Skeleton className="h-48 w-full" />
       ) : (
         <>
-          <div className="mb-6 grid gap-4 md:grid-cols-3">
-            <KpiCard label="Confirmed capital" value={formatPhp(totalCapital)} />
-            <KpiCard label="Expected profit" value={formatPhp(totalProfit)} />
-            <KpiCard label="Blended ROC" value={formatPercent(returnOnCapital(totalProfit, totalCapital))} />
+          <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <KpiCard label="Confirmed capital" value={formatPhp(portfolio.confirmedCapital)} />
+            <KpiCard label="Profit received" value={formatPhp(portfolio.profitReceived)} />
+            <KpiCard label="Profit to receive" value={formatPhp(portfolio.profitToReceive)} />
+            <KpiCard
+              label="Blended ROC"
+              value={formatPercent(returnOnCapital(portfolio.totalExpectedProfit, portfolio.confirmedCapital))}
+            />
           </div>
           <Card>
             <CardHeader>
