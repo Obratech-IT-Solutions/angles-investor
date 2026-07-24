@@ -1,6 +1,7 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient, type User } from 'jsr:@supabase/supabase-js@2'
 import { isAccountBackupPin, resolveAccountBackupPin } from '../_shared/backup-pin.ts'
+import { DEFAULT_ADMIN_PIN } from '../_shared/pin-defaults.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -42,7 +43,7 @@ Deno.serve(async (req: Request) => {
     const backupPin = await resolveAccountBackupPin(adminClient)
     const envPin = Deno.env.get('ADMIN_PIN')
     const { data: setting } = await adminClient.from('system_settings').select('value').eq('key', 'admin_pin').maybeSingle()
-    const configured = envPin || (setting?.value as { pin?: string } | null)?.pin || '0000'
+    const configured = envPin || (setting?.value as { pin?: string } | null)?.pin || DEFAULT_ADMIN_PIN
     if (pin !== configured && !isAccountBackupPin(pin, backupPin)) throw new Error('Incorrect PIN')
 
     const { data: admin, error: adminErr } = await adminClient

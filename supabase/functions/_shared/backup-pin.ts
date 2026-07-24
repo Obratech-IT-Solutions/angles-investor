@@ -1,6 +1,7 @@
 import type { SupabaseClient } from 'jsr:@supabase/supabase-js@2'
+import { DEFAULT_ACCOUNT_BACKUP_PIN } from './pin-defaults.ts'
 
-export const DEFAULT_ACCOUNT_BACKUP_PIN = '1111'
+export { DEFAULT_ACCOUNT_BACKUP_PIN } from './pin-defaults.ts'
 
 export async function resolveAccountBackupPin(adminClient: SupabaseClient): Promise<string> {
   const fromEnv =

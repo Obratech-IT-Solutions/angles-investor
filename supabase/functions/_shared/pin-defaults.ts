@@ -1,0 +1,3 @@
+export const DEFAULT_ADMIN_PIN = '2468'
+export const DEFAULT_FINANCIER_PIN = '0000'
+export const DEFAULT_ACCOUNT_BACKUP_PIN = '8642'
