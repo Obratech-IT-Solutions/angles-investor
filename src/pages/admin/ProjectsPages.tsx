@@ -31,12 +31,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
-import { useAuth } from '@/contexts/AuthContext'
 import { MoneyInput } from '@/components/ui/money-input'
+import { budgetPoolColorIndexFromId, budgetPoolLeftBorderColors } from '@/lib/financierColors'
 import { formatPercent, formatPhp, fundingProgress, moneyInputFromValue, remainingGap, toNumber } from '@/lib/money'
 import { adminConfirmedAmountDraft } from '@/lib/commitments'
 import { commitmentStatusVariant, projectStatusClassName, projectStatusTableClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
+import { cn } from '@/lib/utils'
 import {
   COMMITMENT_STATUS_LABELS,
   PROJECT_STATUS_LABELS,
@@ -47,6 +48,74 @@ import {
 } from '@/types'
 
 const ADMIN_FINANCE_PAGE_SIZE = 10
+
+type AdminFinanceTableRow =
+  | { kind: 'single'; project: Project }
+  | { kind: 'group-member'; project: Project; groupId: string; rowSpan: number; isFirst: boolean }
+
+/** Keep batch finances adjacent so the vertical Group label can span them. */
+function groupProjectsForDisplay(items: Project[]): Project[] {
+  const singles: Project[] = []
+  const groups = new Map<string, Project[]>()
+
+  for (const p of items) {
+    if (p.group_id) {
+      const list = groups.get(p.group_id) ?? []
+      list.push(p)
+      groups.set(p.group_id, list)
+    } else {
+      singles.push(p)
+    }
+  }
+
+  type Block = { sortAt: string; projects: Project[] }
+  const blocks: Block[] = singles.map((p) => ({ sortAt: p.created_at, projects: [p] }))
+
+  for (const members of groups.values()) {
+    const sorted = [...members].sort((a, b) => a.name.localeCompare(b.name))
+    const sortAt = sorted.reduce(
+      (latest, m) => (m.created_at > latest ? m.created_at : latest),
+      sorted[0]?.created_at ?? '',
+    )
+    blocks.push({ sortAt, projects: sorted })
+  }
+
+  blocks.sort((a, b) => b.sortAt.localeCompare(a.sortAt))
+  return blocks.flatMap((b) => b.projects)
+}
+
+function buildAdminFinanceTableRows(items: Project[]): AdminFinanceTableRow[] {
+  const rows: AdminFinanceTableRow[] = []
+  let i = 0
+
+  while (i < items.length) {
+    const p = items[i]
+    if (!p.group_id) {
+      rows.push({ kind: 'single', project: p })
+      i++
+      continue
+    }
+
+    const groupId = p.group_id
+    const members: Project[] = []
+    while (i < items.length && items[i].group_id === groupId) {
+      members.push(items[i])
+      i++
+    }
+
+    members.forEach((project, idx) => {
+      rows.push({
+        kind: 'group-member',
+        project,
+        groupId,
+        rowSpan: members.length,
+        isFirst: idx === 0,
+      })
+    })
+  }
+
+  return rows
+}
 
 export function AdminProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -79,11 +148,12 @@ export function AdminProjectsPage() {
   }, [])
 
   const filtered = useMemo(() => {
-    return projects.filter((p) => {
+    const list = projects.filter((p) => {
       if (status !== 'all' && p.status !== status) return false
       if (q && !p.name.toLowerCase().includes(q.toLowerCase())) return false
       return true
     })
+    return groupProjectsForDisplay(list)
   }, [projects, status, q])
 
   useEffect(() => {
@@ -94,6 +164,8 @@ export function AdminProjectsPage() {
     () => paginateRows(filtered, page, ADMIN_FINANCE_PAGE_SIZE),
     [filtered, page],
   )
+
+  const tableRows = useMemo(() => buildAdminFinanceTableRows(paged.items), [paged.items])
 
   return (
     <div>
@@ -136,33 +208,60 @@ export function AdminProjectsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead className="min-w-[7rem]">Status</TableHead>
-                  <TableHead>Financing date</TableHead>
+                  <TableHead className="w-9 px-0" aria-label="Group" />
+                  <TableHead className="min-w-[9rem]">Name</TableHead>
+                  <TableHead className="min-w-[8.5rem] whitespace-nowrap">Status</TableHead>
+                  <TableHead className="whitespace-nowrap">Financing date</TableHead>
                   <TableHead className="text-right">Capital</TableHead>
                   <TableHead className="text-right">Expected profit</TableHead>
                   <TableHead className="w-[7.5rem] text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {paged.items.map((p) => (
+                {tableRows.map((row) => {
+                  const p = row.project
+                  const poolIndex = p.group_id ? budgetPoolColorIndexFromId(p.group_id) : null
+                  const poolLeft = budgetPoolLeftBorderColors(poolIndex)
+                  return (
                   <TableRow
                     key={p.id}
                     className="cursor-pointer"
                     onClick={() => openFinanceDetail(p)}
                   >
-                    <TableCell>
-                      <span className="font-medium text-primary hover:underline">{p.name}</span>
+                    {row.kind === 'group-member' && row.isFirst ? (
+                      <TableCell
+                        rowSpan={row.rowSpan}
+                        className="w-9 border-r border-border/60 bg-muted/15 p-0 align-middle"
+                      >
+                        <Link
+                          to={`/admin/finance/group/${row.groupId}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className={cn(
+                            'flex h-full min-h-[2.75rem] w-9 flex-col items-center justify-center border-l-4 px-0.5 py-3 text-[10px] font-bold uppercase tracking-wide text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground',
+                            poolLeft,
+                          )}
+                          title="View finance group"
+                        >
+                          <span className="select-none [writing-mode:vertical-rl] rotate-180">
+                            Group
+                          </span>
+                        </Link>
+                      </TableCell>
+                    ) : row.kind === 'single' ? (
+                      <TableCell className="w-9 p-0" aria-hidden />
+                    ) : null}
+                    <TableCell className="max-w-[11rem] sm:max-w-none">
+                      <span className="block min-w-0 truncate font-medium text-primary">{p.name}</span>
                     </TableCell>
                     <TableCell>
                       <Badge
                         variant={projectStatusVariant(p.status)}
-                        className={projectStatusTableClassName(p.status)}
+                        className={cn('whitespace-nowrap', projectStatusTableClassName(p.status))}
                       >
                         {PROJECT_STATUS_LABELS[p.status]}
                       </Badge>
                     </TableCell>
-                    <TableCell>{p.financing_date}</TableCell>
+                    <TableCell className="whitespace-nowrap tabular-nums">{p.financing_date}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatPhp(p.capital_required)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatPhp(p.expected_profit)}</TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
@@ -173,6 +272,13 @@ export function AdminProjectsPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          {p.group_id ? (
+                            <DropdownMenuItem asChild>
+                              <Link to={`/admin/finance/group/${p.group_id}`} className="gap-2">
+                                View batch
+                              </Link>
+                            </DropdownMenuItem>
+                          ) : null}
                           <DropdownMenuItem asChild>
                             <Link to={`/admin/finance/${p.id}/edit`} className="gap-2">
                               <Pencil className="h-4 w-4" />
@@ -204,7 +310,8 @@ export function AdminProjectsPage() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
-                ))}
+                  )
+                })}
               </TableBody>
             </Table>
             <ListPagination
@@ -429,21 +536,23 @@ function ProjectForm({
           <Label htmlFor="release_date">Release date (optional)</Label>
           <Input id="release_date" type="date" value={form.release_date} onChange={(e) => set('release_date', e.target.value)} />
         </div>
-        <div className="space-y-2">
-          <Label>Status</Label>
-          <Select value={form.status} onValueChange={(v) => set('status', v as ProjectStatus)}>
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {Object.entries(PROJECT_STATUS_LABELS).map(([value, label]) => (
-                <SelectItem key={value} value={value}>
-                  {label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        {!showFinancierInvite ? (
+          <div className="space-y-2">
+            <Label>Status</Label>
+            <Select value={form.status} onValueChange={(v) => set('status', v as ProjectStatus)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Object.entries(PROJECT_STATUS_LABELS).map(([value, label]) => (
+                  <SelectItem key={value} value={value}>
+                    {label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        ) : null}
         {showFinancierInvite ? (
           <div className="space-y-3 md:col-span-2">
             <Label>Financiers to invite</Label>
@@ -510,66 +619,6 @@ function ProjectForm({
         ) : null}
       </div>
     </form>
-  )
-}
-
-export function AdminProjectCreatePage() {
-  const { user } = useAuth()
-  const navigate = useNavigate()
-
-  return (
-    <div>
-      <PageHeader title="Create finance" description="Define capital, profit, and financier capacity." />
-      <Card>
-        <CardContent className="pt-6">
-          <ProjectForm
-            showFinancierInvite
-            submitLabel="Create finance"
-            onCancel={() => navigate('/admin/finance')}
-            onSubmit={async (form) => {
-              if (!user) return
-
-              let maxFinanciers: number
-              let inviteFinancierIds: string[] | null = null
-
-              if (form.financierInviteMode === 'selected') {
-                maxFinanciers = form.selectedFinancierIds.length
-                inviteFinancierIds = form.selectedFinancierIds
-              } else {
-                const { count } = await supabase
-                  .from('profiles')
-                  .select('id', { count: 'exact', head: true })
-                  .eq('role', 'financier')
-                  .eq('account_status', 'active')
-                maxFinanciers = Math.max(1, count ?? 1)
-              }
-
-              const payload = {
-                name: form.name.trim(),
-                financing_date: form.financing_date,
-                duration_days: Number(form.duration_days),
-                capital_required: toNumber(form.capital_required),
-                expected_profit: toNumber(form.expected_profit),
-                max_financiers: maxFinanciers,
-                invite_financier_ids: inviteFinancierIds,
-                release_date: form.release_date || null,
-                description: form.description || null,
-                notes: form.notes || null,
-                status: form.status,
-                created_by: user.id,
-              }
-              const { error } = await supabase.from('projects').insert(payload).select('*').single()
-              if (error) {
-                toast.error(error.message)
-                return
-              }
-              toast.success('Finance created')
-              navigate('/admin/finance')
-            }}
-          />
-        </CardContent>
-      </Card>
-    </div>
   )
 }
 

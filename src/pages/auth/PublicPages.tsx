@@ -2,7 +2,7 @@ import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import type { Session } from '@supabase/supabase-js'
-import { Shield } from 'lucide-react'
+import { Crown } from 'lucide-react'
 import { PinPad } from '@/components/PinPad'
 import { MoneyRain } from '@/components/MoneyRain'
 import { Button } from '@/components/ui/button'
@@ -127,36 +127,45 @@ export function LandingPage() {
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,_#1a4a73_0%,_#0b2a4a_45%,_#071a2e_100%)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,_#1a4a73_0%,_#0b2a4a_45%,_#071a2e_100%)] md:bg-[radial-gradient(ellipse_at_top,_#1a4a73_0%,_#0b2a4a_50%,_#071a2e_100%)]" />
       <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.06)_1px,transparent_1px)] [background-size:48px_48px]" />
       <MoneyRain />
 
-      <div className="relative z-10 mx-auto flex min-h-screen max-w-5xl flex-col justify-center px-6 py-16 text-white">
-        <h1 className="font-[family-name:var(--font-display)] text-5xl font-bold tracking-tight md:text-6xl">
+      <div className="relative z-10 mx-auto flex min-h-screen w-full max-w-5xl flex-col items-center justify-center px-6 py-16 text-center text-white">
+        <h1 className="font-[family-name:var(--font-display)] text-5xl font-bold tracking-tight md:text-6xl lg:text-7xl">
           Angels Investor
         </h1>
 
-        <div className="mt-10 flex w-full max-w-xs flex-col gap-3">
-          <Button
-            size="lg"
-            className="h-12 w-full bg-white text-primary hover:bg-slate-100"
-            onClick={() => {
-              setAdminPin('')
-              setAdminOpen(true)
-            }}
-          >
-            <Shield className="h-4 w-4" />
-            Admin
-          </Button>
+        <div className="mt-10 grid w-full max-w-xs grid-cols-1 gap-3 sm:max-w-sm md:max-w-xl md:grid-cols-2 md:gap-4">
+          <div className="relative md:col-span-2">
+            <Button
+              size="lg"
+              className="h-12 w-full bg-white text-primary hover:bg-slate-100"
+              onClick={() => {
+                setAdminPin('')
+                setAdminOpen(true)
+              }}
+            >
+              Neil
+            </Button>
+            <Crown
+              className="pointer-events-none absolute -right-1 -top-2.5 h-6 w-6 fill-amber-400 text-amber-500 drop-shadow-md"
+              aria-hidden
+            />
+          </div>
 
-          {financiers.map((f) => {
+          {financiers.map((f, index) => {
             const label = f.display_name || f.full_name
+            const lastOdd =
+              financiers.length % 2 === 1 && index === financiers.length - 1
             return (
               <Button
                 key={f.id}
                 size="lg"
                 variant="outline"
-                className="h-12 w-full border-white/40 bg-transparent text-base text-white hover:bg-white/10"
+                className={`h-12 w-full border-white/40 bg-transparent text-base text-white hover:bg-white/10${
+                  lastOdd ? ' md:col-span-2 md:max-w-[calc(50%-0.5rem)] md:justify-self-center' : ''
+                }`}
                 onClick={() => {
                   setSelected(f)
                   setFinPin('')

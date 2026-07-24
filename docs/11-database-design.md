@@ -24,6 +24,8 @@
 erDiagram
   profiles ||--o{ projects : creates
   profiles ||--o{ project_financiers : participates
+  profiles ||--o{ finance_groups : creates
+  finance_groups ||--o{ projects : batches
   projects ||--o{ project_financiers : has
   projects ||--o{ project_releases : has
   project_releases ||--o{ financier_release_payments : distributes
@@ -32,6 +34,18 @@ erDiagram
   profiles ||--o{ account_security_events : subject
   profiles ||--o{ notifications : receives
   system_settings ||--|| system_settings : singleton
+
+  finance_groups {
+    uuid id PK
+    text name
+    date financing_date
+    text status
+    text description
+    text notes
+    uuid created_by FK
+    timestamptz created_at
+    timestamptz updated_at
+  }
 
   profiles {
     uuid id PK
@@ -64,6 +78,7 @@ erDiagram
     text notes
     text status
     uuid created_by FK
+    uuid group_id FK
     timestamptz created_at
     timestamptz updated_at
   }

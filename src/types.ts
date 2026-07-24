@@ -40,6 +40,18 @@ export interface Profile {
   deactivated_at: string | null
 }
 
+export interface FinanceGroup {
+  id: string
+  name: string
+  financing_date: string
+  status: ProjectStatus | string
+  description: string | null
+  notes: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
 export interface Project {
   id: string
   name: string
@@ -57,7 +69,64 @@ export interface Project {
   created_by: string
   created_at: string
   updated_at: string
+  group_id?: string | null
   invite_financier_ids?: string[] | null
+  finance_groups?: Pick<FinanceGroup, 'id' | 'name' | 'financing_date'> | null
+}
+
+export type FinanceGroupLineSummary = {
+  project_id: string
+  name: string
+  status: ProjectStatus | string
+  capital_required: number | string
+  expected_profit: number | string
+  duration_days: number
+  financing_date: string
+  calculated_expected_release: string | null
+  confirmed_total: number | string
+  my_confirmed: number | string
+  my_suggested?: number | string
+  my_status: CommitmentStatus | string | null
+  project_financier_id: string | null
+}
+
+export type FinanceGroupSummary = {
+  group_id: string
+  name: string
+  financing_date: string
+  status: string
+  description: string | null
+  notes: string | null
+  group_budget: number | string
+  group_profit: number | string
+  group_confirmed: number | string
+  group_remaining: number | string
+  my_confirmed: number | string
+  my_suggested?: number | string
+  lines: FinanceGroupLineSummary[]
+}
+
+export type AdminCreateFinanceGroupResult = {
+  group_id: string | null
+  project_ids: string[]
+  name: string
+}
+
+export type GroupCommitmentConfirmResult = {
+  group_id: string
+  total_amount: number | string
+  group_budget: number | string
+  group_profit: number | string
+  budget_pct: number | string
+  expected_profit_total: number | string
+  splits: Array<{
+    project_id: string
+    project_name: string
+    confirmed_amount: number | string
+    weight_ratio: number | string
+    expected_profit_share: number | string
+    project_financier_id: string
+  }>
 }
 
 export interface ProjectFinancier {
@@ -78,7 +147,19 @@ export interface ProjectFinancier {
   created_at: string
   updated_at: string
   profiles?: Pick<Profile, 'id' | 'username' | 'full_name' | 'email' | 'contact_number' | 'account_status'> | null
-  projects?: Pick<Project, 'id' | 'name' | 'status' | 'capital_required' | 'expected_profit' | 'release_date' | 'financing_date'> | null
+  projects?: Pick<
+    Project,
+    | 'id'
+    | 'name'
+    | 'status'
+    | 'capital_required'
+    | 'expected_profit'
+    | 'release_date'
+    | 'financing_date'
+    | 'duration_days'
+    | 'group_id'
+    | 'calculated_expected_release'
+  > | null
 }
 
 export interface ProjectRelease {
@@ -169,6 +250,11 @@ export type Database = {
   public: {
     Tables: {
       profiles: { Row: Profile; Insert: Partial<Profile> & Pick<Profile, 'id' | 'username' | 'full_name' | 'role'>; Update: Partial<Profile> }
+      finance_groups: {
+        Row: FinanceGroup
+        Insert: Partial<FinanceGroup> & Pick<FinanceGroup, 'name' | 'financing_date' | 'created_by'>
+        Update: Partial<FinanceGroup>
+      }
       projects: { Row: Project; Insert: Omit<Project, 'id' | 'created_at' | 'updated_at' | 'calculated_expected_release' | 'actual_release_date'> & { id?: string }; Update: Partial<Project> }
       project_financiers: { Row: ProjectFinancier; Insert: Partial<ProjectFinancier> & Pick<ProjectFinancier, 'project_id' | 'financier_id'>; Update: Partial<ProjectFinancier> }
       project_releases: { Row: ProjectRelease; Insert: Partial<ProjectRelease> & Pick<ProjectRelease, 'project_id'>; Update: Partial<ProjectRelease> }
@@ -200,6 +286,39 @@ export type Database = {
         Returns: Project
       }
       invite_financiers: { Args: { p_project_id: string; p_financier_ids: string[] }; Returns: ProjectFinancier[] }
+      admin_create_finance_group: {
+        Args: {
+          p_financing_date: string
+          p_lines: Array<{
+            name: string
+            capital_required: number
+            expected_profit: number
+            duration_days: number
+          }>
+          p_financier_ids?: string[] | null
+          p_name?: string | null
+          p_status?: string | null
+          p_description?: string | null
+          p_notes?: string | null
+        }
+        Returns: AdminCreateFinanceGroupResult
+      }
+      financier_confirm_commitment: {
+        Args: { p_project_financier_id: string; p_amount: number }
+        Returns: ProjectFinancier
+      }
+      financier_confirm_group_commitment: {
+        Args: { p_group_id: string; p_total_amount: number }
+        Returns: GroupCommitmentConfirmResult
+      }
+      financier_reject_group_commitment: {
+        Args: { p_group_id: string }
+        Returns: { group_id: string; rejected_lines: number }
+      }
+      get_finance_group_summary: {
+        Args: { p_group_id: string }
+        Returns: FinanceGroupSummary
+      }
       record_project_release: {
         Args: {
           p_project_id: string

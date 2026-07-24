@@ -15,11 +15,14 @@ import {
 import { AdminDashboardPage } from '@/pages/admin/DashboardPage'
 import {
   AdminFundingPage,
-  AdminProjectCreatePage,
   AdminProjectDetailPage,
   AdminProjectEditPage,
   AdminProjectsPage,
 } from '@/pages/admin/ProjectsPages'
+import {
+  AdminFinanceGroupCreatePage,
+  AdminFinanceGroupDetailPage,
+} from '@/pages/admin/FinanceGroupPages'
 import {
   AdminAuditPage,
   AdminFinancierCreatePage,
@@ -57,7 +60,9 @@ export default function App() {
             <Route path="/admin" element={<AdminLayout />}>
               <Route index element={<AdminDashboardPage />} />
               <Route path="finance" element={<AdminProjectsPage />} />
-              <Route path="finance/new" element={<AdminProjectCreatePage />} />
+              <Route path="finance/new" element={<AdminFinanceGroupCreatePage />} />
+              <Route path="finance/group/new" element={<Navigate to="/admin/finance/new" replace />} />
+              <Route path="finance/group/:groupId" element={<AdminFinanceGroupDetailPage />} />
               <Route path="finance/:id" element={<AdminProjectDetailPage />} />
               <Route path="finance/:id/edit" element={<AdminProjectEditPage />} />
               <Route path="finance/:id/funding" element={<AdminFundingPage />} />

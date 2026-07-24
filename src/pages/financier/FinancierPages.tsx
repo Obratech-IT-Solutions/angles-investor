@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   Bar,
@@ -17,6 +16,8 @@ import {
 import { PageHeader, KpiCard, EmptyState } from '@/components/shared/PageBits'
 import { ListPagination, paginateRows } from '@/components/shared/ListPagination'
 import { FinanceDetailDialog } from '@/components/finance/FinanceDetailDialog'
+import { GroupCommitmentDialog } from '@/components/finance/GroupCommitmentDialog'
+import { GroupFinanceDetailDialog } from '@/components/finance/GroupFinanceDetailDialog'
 import { CommitmentConfirmDialog } from '@/components/finance/CommitmentConfirmDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -28,7 +29,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { useAuth } from '@/contexts/AuthContext'
 import { MoneyInput } from '@/components/ui/money-input'
+import { sumGroupBudget, sumGroupProfit } from '@/lib/finance-group'
 import {
+  budgetBasedProfitShare,
   expectedProfitShare,
   formatPercent,
   formatPhp,
@@ -40,7 +43,7 @@ import {
   totalReceivable,
 } from '@/lib/money'
 import { commitmentStatusVariant, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
-import { financingDateChipColors, formatFinancingDateChip } from '@/lib/financierColors'
+import { budgetPoolBorderColors, budgetPoolColorIndexFromId, budgetPoolLeftBorderColors, financingDateChipColors, formatFinancingDateChip } from '@/lib/financierColors'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -56,10 +59,211 @@ import {
 const COLORS = ['#0b2a4a', '#1a4a73', '#1f7a4d', '#b7791f', '#5b6b7c']
 const FINANCE_LIST_PAGE_SIZE = 6
 
+const PROJECT_LIST_SELECT =
+  '*, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, release_date, duration_days, group_id, calculated_expected_release)'
+
+function financeIdentityKey(row: ProjectFinancier): string | null {
+  const name = row.projects?.name?.trim()
+  const date = row.projects?.financing_date
+  if (!name || !date) return null
+  return `${name.toLowerCase()}|${date}`
+}
+
+/** Drop solo rows when the same finance name+date also exists in a group batch. */
+function dedupeOverlappingFinancierRows(rows: ProjectFinancier[]): ProjectFinancier[] {
+  const groupedKeys = new Set<string>()
+  for (const row of rows) {
+    const key = financeIdentityKey(row)
+    if (key && row.projects?.group_id) groupedKeys.add(key)
+  }
+  if (groupedKeys.size === 0) return rows
+  return rows.filter((row) => {
+    const key = financeIdentityKey(row)
+    if (!key || row.projects?.group_id) return true
+    return !groupedKeys.has(key)
+  })
+}
+
+async function normalizeFinancierRows(rows: ProjectFinancier[]): Promise<ProjectFinancier[]> {
+  const projectIds = [...new Set(rows.map((r) => r.project_id))]
+  if (projectIds.length === 0) return rows
+
+  const { data: projects, error } = await supabase.from('projects').select('id, group_id').in('id', projectIds)
+  if (error) {
+    console.error('normalizeFinancierRows', error)
+    return dedupeOverlappingFinancierRows(rows)
+  }
+
+  const groupByProject = new Map((projects ?? []).map((p) => [p.id, p.group_id as string | null]))
+  const enriched = rows.map((row) => ({
+    ...row,
+    projects: row.projects
+      ? {
+          ...row.projects,
+          group_id: row.projects.group_id ?? groupByProject.get(row.project_id) ?? null,
+        }
+      : row.projects,
+  }))
+  return dedupeOverlappingFinancierRows(enriched)
+}
+
+/** Collapse grouped finances into one representative row per batch for list UIs. */
+function collapseRowsByGroup(rows: ProjectFinancier[]): ProjectFinancier[] {
+  const seenGroups = new Set<string>()
+  const out: ProjectFinancier[] = []
+  for (const r of rows) {
+    const gid = r.projects?.group_id ?? null
+    if (gid) {
+      if (seenGroups.has(gid)) continue
+      seenGroups.add(gid)
+    }
+    out.push(r)
+  }
+  return out
+}
+
+function groupMateRows(rows: ProjectFinancier[], groupId: string): ProjectFinancier[] {
+  return rows.filter((r) => r.projects?.group_id === groupId)
+}
+
+type FinancierFinanceTableRow =
+  | { kind: 'single'; row: ProjectFinancier }
+  | {
+      kind: 'group-member'
+      row: ProjectFinancier
+      groupId: string
+      rowSpan: number
+      isFirst: boolean
+    }
+
+/** Keep batch finances adjacent (same order as admin list). */
+function sortFinancierRowsForDisplay(rows: ProjectFinancier[]): ProjectFinancier[] {
+  const singles: ProjectFinancier[] = []
+  const groups = new Map<string, ProjectFinancier[]>()
+
+  for (const r of rows) {
+    const gid = r.projects?.group_id ?? null
+    if (gid) {
+      const list = groups.get(gid) ?? []
+      list.push(r)
+      groups.set(gid, list)
+    } else {
+      singles.push(r)
+    }
+  }
+
+  type Block = { sortAt: string; items: ProjectFinancier[] }
+  const blocks: Block[] = singles.map((r) => ({
+    sortAt: r.projects?.financing_date ?? '',
+    items: [r],
+  }))
+
+  for (const items of groups.values()) {
+    const sorted = [...items].sort((a, b) =>
+      (a.projects?.name ?? '').localeCompare(b.projects?.name ?? ''),
+    )
+    blocks.push({
+      sortAt: sorted[0]?.projects?.financing_date ?? '',
+      items: sorted,
+    })
+  }
+
+  blocks.sort((a, b) => b.sortAt.localeCompare(a.sortAt))
+  return blocks.flatMap((b) => b.items)
+}
+
+function buildFinancierFinanceTableRows(items: ProjectFinancier[]): FinancierFinanceTableRow[] {
+  const out: FinancierFinanceTableRow[] = []
+  let i = 0
+
+  while (i < items.length) {
+    const row = items[i]
+    const groupId = row.projects?.group_id ?? null
+    if (!groupId) {
+      out.push({ kind: 'single', row })
+      i++
+      continue
+    }
+
+    const members: ProjectFinancier[] = []
+    while (i < items.length && items[i].projects?.group_id === groupId) {
+      members.push(items[i])
+      i++
+    }
+
+    members.forEach((member, idx) => {
+      out.push({
+        kind: 'group-member',
+        row: member,
+        groupId,
+        rowSpan: members.length,
+        isFirst: idx === 0,
+      })
+    })
+  }
+
+  return out
+}
+
+function rowDisplayAmount(row: ProjectFinancier): number {
+  return row.commitment_status === 'confirmed'
+    ? toNumber(row.confirmed_amount)
+    : toNumber(row.current_suggested_amount)
+}
+
+function rowCanDecide(row: ProjectFinancier): boolean {
+  const status = row.projects?.status
+  const isOpen =
+    status === 'open_for_funding' ||
+    status === 'partially_funded' ||
+    status === 'active'
+  return isOpen && row.commitment_status !== 'withdrawn'
+}
+
+function FinancierRowActionButton({
+  row,
+  onOpen,
+}: {
+  row: ProjectFinancier
+  onOpen: (projectId: string) => void
+}) {
+  const isConfirmed = row.commitment_status === 'confirmed'
+  const isRejected = row.commitment_status === 'rejected'
+  const isBatch = Boolean(row.projects?.group_id)
+  const canDecide = rowCanDecide(row) && !isBatch
+
+  const label = canDecide
+    ? isRejected
+      ? 'Accept'
+      : isConfirmed
+        ? 'Update'
+        : 'Confirm / Reject'
+    : 'View'
+
+  return (
+    <Button
+      type="button"
+      size="sm"
+      variant={canDecide ? 'default' : 'outline'}
+      className="h-9 min-w-[5.5rem] shrink-0 px-3 text-xs sm:min-w-[7.5rem] sm:text-sm"
+      onClick={() => onOpen(row.project_id)}
+    >
+      <span className="sm:hidden">
+        {canDecide ? (isRejected ? 'Accept' : isConfirmed ? 'Update' : 'Decide') : 'View'}
+      </span>
+      <span className="hidden sm:inline">{label}</span>
+    </Button>
+  )
+}
+
 function useFinancierFinanceDetail(onDecisionResolved?: () => void) {
   const { profile } = useAuth()
   const [detailOpen, setDetailOpen] = useState(false)
   const [detailProject, setDetailProject] = useState<Project | null>(null)
+  const [groupDetailOpen, setGroupDetailOpen] = useState(false)
+  const [groupOpen, setGroupOpen] = useState(false)
+  const [groupId, setGroupId] = useState<string | null>(null)
+  const [groupStartAtDecide, setGroupStartAtDecide] = useState(false)
 
   async function openFinanceDetail(projectId: string) {
     const { data, error } = await supabase.from('projects').select('*').eq('id', projectId).single()
@@ -71,60 +275,98 @@ function useFinancierFinanceDetail(onDecisionResolved?: () => void) {
     setDetailOpen(true)
   }
 
+  function openGroupDetail(id: string) {
+    setGroupId(id)
+    setGroupDetailOpen(true)
+  }
+
+  function openGroupCommit(opts?: { update?: boolean }) {
+    setGroupStartAtDecide(Boolean(opts?.update))
+    setGroupDetailOpen(false)
+    setGroupOpen(true)
+  }
+
   const detailDialog = (
-    <FinanceDetailDialog
-      project={detailProject}
-      open={detailOpen}
-      onOpenChange={setDetailOpen}
-      mode="financier"
-      financierId={profile?.id}
-      onDecisionResolved={onDecisionResolved}
-    />
+    <>
+      <FinanceDetailDialog
+        project={detailProject}
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        mode="financier"
+        financierId={profile?.id}
+        onDecisionResolved={onDecisionResolved}
+      />
+      <GroupFinanceDetailDialog
+        groupId={groupId}
+        open={groupDetailOpen}
+        onOpenChange={(open) => {
+          setGroupDetailOpen(open)
+          if (!open && !groupOpen) setGroupId(null)
+        }}
+        financierId={profile?.id}
+        onDecisionResolved={onDecisionResolved}
+        onConfirmBatch={openGroupCommit}
+      />
+      <GroupCommitmentDialog
+        groupId={groupId}
+        open={groupOpen}
+        startAtDecide={groupStartAtDecide}
+        onOpenChange={(open) => {
+          setGroupOpen(open)
+          if (!open) {
+            setGroupId(null)
+            setGroupStartAtDecide(false)
+          }
+        }}
+        onConfirmed={onDecisionResolved}
+      />
+    </>
   )
 
-  return { openFinanceDetail, detailDialog }
-}
-
-function FinanceDecisionButton({ projectId, canDecide }: { projectId: string; canDecide: boolean }) {
-  return (
-    <Button
-      asChild
-      size="sm"
-      variant={canDecide ? 'default' : 'outline'}
-      className="h-9 min-w-[5.5rem] shrink-0 px-3 text-xs sm:min-w-[7.5rem] sm:text-sm"
-    >
-      <Link to={`/app/finance/${projectId}`}>
-        {canDecide ? (
-          <>
-            <span className="sm:hidden">Decide</span>
-            <span className="hidden sm:inline">Confirm / Reject</span>
-          </>
-        ) : (
-          'View'
-        )}
-      </Link>
-    </Button>
-  )
+  return { openFinanceDetail, openGroupDetail, detailDialog }
 }
 
 function FinancierDecisionItem({
   row,
+  allRows,
   confirmedTotal,
   onOpenDetail,
+  onOpenGroup,
 }: {
   row: ProjectFinancier
+  allRows: ProjectFinancier[]
   confirmedTotal: number
   onOpenDetail: (projectId: string) => void
+  onOpenGroup?: (groupId: string) => void
 }) {
-  const capital = toNumber(row.projects?.capital_required)
-  const gap = remainingGap(confirmedTotal, capital)
-  const suggested = toNumber(row.current_suggested_amount)
-  const funded = fundingProgress(confirmedTotal, capital)
+  const groupId = row.projects?.group_id ?? null
+  const mates = groupId ? groupMateRows(allRows, groupId) : [row]
+  const isBatch = Boolean(groupId && mates.length > 1)
+
+  const capital = isBatch
+    ? sumGroupBudget(mates.map((m) => ({ capitalRequired: m.projects?.capital_required ?? 0 })))
+    : toNumber(row.projects?.capital_required)
+  const gap = remainingGap(isBatch ? 0 : confirmedTotal, capital)
+  const suggested = isBatch
+    ? mates.reduce((s, m) => s + toNumber(m.current_suggested_amount), 0)
+    : toNumber(row.current_suggested_amount)
+  const funded = fundingProgress(isBatch ? 0 : confirmedTotal, capital)
   const startDate = row.projects?.financing_date
   const dateChip = startDate ? financingDateChipColors(startDate) : null
+  const poolBorder = groupId
+    ? budgetPoolBorderColors(budgetPoolColorIndexFromId(groupId))
+    : null
+  const batchProfit = isBatch
+    ? sumGroupProfit(mates.map((m) => ({ expectedProfit: m.projects?.expected_profit ?? 0 })))
+    : toNumber(row.projects?.expected_profit)
 
   return (
-    <li className="rounded-2xl border border-border/30 bg-card p-4 shadow-sm">
+    <li
+      className={cn(
+        'rounded-2xl border border-border/30 bg-card p-4 shadow-sm',
+        poolBorder ? cn('border-2', poolBorder) : undefined,
+      )}
+    >
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -141,13 +383,33 @@ function FinancierDecisionItem({
                 {formatFinancingDateChip(startDate)}
               </span>
             ) : null}
-            <p className="truncate font-semibold leading-tight text-foreground">{row.projects?.name}</p>
+            <p className="truncate font-semibold leading-tight text-foreground">
+              {isBatch ? `${mates.length} finances · batch` : row.projects?.name}
+            </p>
+            {isBatch ? (
+              <Badge variant="outline" className={cn('text-[10px]', poolBorder)}>
+                Batch
+              </Badge>
+            ) : null}
           </div>
-          <p className="mt-1 text-xs leading-snug text-muted-foreground">
-            {formatPercent(funded)} funded · {formatPhp(confirmedTotal)} of {formatPhp(capital)}
-          </p>
+          {isBatch ? (
+            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+              {mates.map((m) => (
+                <li key={m.id} className="flex justify-between gap-2">
+                  <span className="truncate font-medium text-foreground">{m.projects?.name}</span>
+                  <span className="shrink-0 tabular-nums">
+                    {formatPhp(m.projects?.capital_required)} · {m.projects?.duration_days ?? '—'}d
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-1 text-xs leading-snug text-muted-foreground">
+              {formatPercent(funded)} funded · {formatPhp(confirmedTotal)} of {formatPhp(capital)}
+            </p>
+          )}
         </div>
-        {row.projects?.status ? (
+        {!isBatch && row.projects?.status ? (
           <Badge
             variant={projectStatusVariant(row.projects.status)}
             className={cn('shrink-0 self-center', projectStatusTableClassName(row.projects.status))}
@@ -157,19 +419,38 @@ function FinancierDecisionItem({
         ) : null}
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <div className="rounded-lg bg-muted/30 px-3 py-2.5">
-          <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Still needed</p>
-          <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums text-primary">{formatPhp(gap)}</p>
+      {!isBatch ? (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-muted/30 px-3 py-2.5">
+            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Still needed</p>
+            <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums text-primary">{formatPhp(gap)}</p>
+          </div>
+          <div className="rounded-lg bg-muted/30 px-3 py-2.5">
+            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Suggested for you</p>
+            <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums">{formatPhp(suggested)}</p>
+          </div>
         </div>
-        <div className="rounded-lg bg-muted/30 px-3 py-2.5">
-          <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Suggested for you</p>
-          <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums">{formatPhp(suggested)}</p>
+      ) : (
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-muted/30 px-3 py-2.5">
+            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Batch budget</p>
+            <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums text-primary">{formatPhp(capital)}</p>
+          </div>
+          <div className="rounded-lg bg-muted/30 px-3 py-2.5">
+            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Batch profit</p>
+            <p className="mt-1.5 text-sm font-semibold leading-none tabular-nums">{formatPhp(batchProfit)}</p>
+          </div>
         </div>
-      </div>
+      )}
 
-      <Button className="mt-4 h-10 w-full" size="sm" onClick={() => void onOpenDetail(row.project_id)}>
-        Review & decide
+      <Button
+        className="mt-4 h-10 w-full"
+        size="sm"
+        onClick={() =>
+          void (isBatch && groupId && onOpenGroup ? onOpenGroup(groupId) : onOpenDetail(row.project_id))
+        }
+      >
+        {isBatch ? 'Review batch & decide' : 'Review & decide'}
       </Button>
     </li>
   )
@@ -177,21 +458,29 @@ function FinancierDecisionItem({
 
 function FinancierDecisionList({
   rows,
+  allRows,
   confirmedByProject,
   onOpenDetail,
+  onOpenGroup,
 }: {
   rows: ProjectFinancier[]
+  allRows?: ProjectFinancier[]
   confirmedByProject: Record<string, number>
   onOpenDetail: (projectId: string) => void
+  onOpenGroup?: (groupId: string) => void
 }) {
+  const source = allRows ?? rows
+  const displayRows = collapseRowsByGroup(rows)
   return (
     <ul className="space-y-3">
-      {rows.map((r) => (
+      {displayRows.map((r) => (
         <FinancierDecisionItem
-          key={r.id}
+          key={r.projects?.group_id ? `g-${r.projects.group_id}` : r.id}
           row={r}
+          allRows={source}
           confirmedTotal={confirmedByProject[r.project_id] ?? 0}
           onOpenDetail={onOpenDetail}
+          onOpenGroup={onOpenGroup}
         />
       ))}
     </ul>
@@ -199,196 +488,85 @@ function FinancierDecisionList({
 }
 
 function ScrollableFinanceTable({ children }: { children: ReactNode }) {
-  return <div className="hidden overflow-x-auto md:block">{children}</div>
-}
-
-function FinancierFinanceSummaryCard({
-  row,
-  confirmedTotal,
-  pendingPayout,
-  onOpen,
-}: {
-  row: ProjectFinancier
-  confirmedTotal: number
-  pendingPayout?: number
-  onOpen: (projectId: string) => void
-}) {
-  const capital = toNumber(row.projects?.capital_required)
-  const funded = fundingProgress(confirmedTotal, capital)
-  const isConfirmed = row.commitment_status === 'confirmed'
-  const displayAmount = isConfirmed ? toNumber(row.confirmed_amount) : toNumber(row.current_suggested_amount)
-  const startDate = row.projects?.financing_date
-  const dateChip = startDate ? financingDateChipColors(startDate) : null
-
-  return (
-    <li>
-      <button
-        type="button"
-        className="w-full rounded-2xl border border-border/30 bg-card p-4 text-left shadow-sm transition-colors active:bg-muted/30"
-        onClick={() => void onOpen(row.project_id)}
-      >
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {startDate && dateChip ? (
-                <span
-                  className={cn(
-                    'shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] font-semibold tabular-nums',
-                    dateChip.bg,
-                    dateChip.text,
-                    dateChip.border,
-                  )}
-                  title={`Start ${startDate}`}
-                >
-                  {formatFinancingDateChip(startDate)}
-                </span>
-              ) : null}
-              <p className="truncate font-semibold leading-tight text-foreground">{row.projects?.name}</p>
-            </div>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              {row.projects?.status ? (
-                <Badge
-                  variant={projectStatusVariant(row.projects.status)}
-                  className={cn('text-[10px]', projectStatusTableClassName(row.projects.status))}
-                >
-                  {PROJECT_STATUS_LABELS[row.projects.status]}
-                </Badge>
-              ) : null}
-              <Badge variant={commitmentStatusVariant(row.commitment_status)} className="text-[10px]">
-                {COMMITMENT_STATUS_LABELS[row.commitment_status]}
-              </Badge>
-            </div>
-          </div>
-          <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground/60" aria-hidden />
-        </div>
-
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <div className="rounded-lg bg-muted/30 px-3 py-2">
-            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">
-              {isConfirmed ? 'Your commitment' : 'Suggested'}
-            </p>
-            <p className="mt-1 text-sm font-semibold leading-none tabular-nums">{formatPhp(displayAmount)}</p>
-          </div>
-          <div className="rounded-lg bg-muted/30 px-3 py-2">
-            <p className="text-[10px] font-medium uppercase leading-none tracking-wide text-muted-foreground">Funded</p>
-            <p className="mt-1 text-sm font-semibold leading-none tabular-nums">{formatPercent(funded)}</p>
-          </div>
-        </div>
-
-        <Progress value={funded} className="mt-3 h-1.5" />
-        <p className="mt-1.5 text-[11px] leading-snug text-muted-foreground">
-          {formatPhp(confirmedTotal)} of {formatPhp(capital)} raised
-        </p>
-        {pendingPayout != null && pendingPayout > 0 ? (
-          <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2">
-            <p className="text-xs font-medium text-primary">Payout ready: {formatPhp(pendingPayout)}</p>
-            <p className="mt-0.5 text-[11px] text-muted-foreground">Tap to open and confirm you received the money.</p>
-          </div>
-        ) : null}
-      </button>
-    </li>
-  )
+  return <div className="overflow-x-auto">{children}</div>
 }
 
 function FinancierFinanceList({
   rows,
-  confirmedByProject,
-  pendingPayoutByProject,
   onRowClick,
-  onOpenDecision,
+  onOpenGroup,
 }: {
   rows: ProjectFinancier[]
-  confirmedByProject: Record<string, number>
-  pendingPayoutByProject?: Record<string, number>
   onRowClick: (projectId: string) => void
-  onOpenDecision?: (projectId: string) => void
+  onOpenGroup?: (groupId: string) => void
 }) {
   const [page, setPage] = useState(1)
 
-  const needsDecision = rows.filter((r) => {
-    const isOpen = r.projects?.status === 'open_for_funding' || r.projects?.status === 'partially_funded'
-    return isOpen && r.commitment_status !== 'confirmed'
-  })
-  const otherRows = rows.filter((r) => !needsDecision.some((n) => n.id === r.id))
+  const sortedRows = useMemo(() => sortFinancierRowsForDisplay(rows), [rows])
+
+  const tableRows = useMemo(() => buildFinancierFinanceTableRows(sortedRows), [sortedRows])
+
+  const hasConfirmed = sortedRows.some((r) => r.commitment_status === 'confirmed')
 
   useEffect(() => {
     setPage(1)
-  }, [rows.length])
+  }, [sortedRows.length])
 
-  const mobilePage = paginateRows(otherRows, page, FINANCE_LIST_PAGE_SIZE)
-  const desktopPage = paginateRows(rows, page, FINANCE_LIST_PAGE_SIZE)
+  const paged = paginateRows(tableRows, page, FINANCE_LIST_PAGE_SIZE)
 
   return (
-    <>
-      <div className="space-y-6 md:hidden">
-        {needsDecision.length > 0 ? (
-          <section>
-            <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Needs your decision
-            </p>
-            <FinancierDecisionList
-              rows={needsDecision}
-              confirmedByProject={confirmedByProject}
-              onOpenDetail={(projectId) => (onOpenDecision ?? onRowClick)(projectId)}
-            />
-          </section>
-        ) : null}
-
-        {otherRows.length > 0 ? (
-          <section>
-            {needsDecision.length > 0 ? (
-              <p className="mb-3 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Your finances
-              </p>
-            ) : null}
-            <ul className="space-y-3">
-              {mobilePage.items.map((r) => (
-                <FinancierFinanceSummaryCard
-                  key={r.id}
-                  row={r}
-                  confirmedTotal={confirmedByProject[r.project_id] ?? 0}
-                  pendingPayout={pendingPayoutByProject?.[r.project_id]}
-                  onOpen={onRowClick}
-                />
-              ))}
-            </ul>
-            <ListPagination
-              page={mobilePage.page}
-              totalPages={mobilePage.totalPages}
-              totalItems={mobilePage.totalItems}
-              pageSize={FINANCE_LIST_PAGE_SIZE}
-              onPageChange={setPage}
-            />
-          </section>
-        ) : null}
-      </div>
-
-      <ScrollableFinanceTable>
+    <ScrollableFinanceTable>
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead>Start</TableHead>
+              <TableHead className="sticky left-0 z-10 w-9 bg-background px-0" aria-label="Group" />
+              <TableHead className="sticky left-9 z-10 bg-background">Start</TableHead>
               <TableHead>Finance</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Commitment</TableHead>
-              <TableHead className="text-right">Suggested</TableHead>
+              <TableHead className="text-right">{hasConfirmed ? 'Your amount' : 'Suggested'}</TableHead>
               <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {desktopPage.items.map((r) => {
-              const isOpen =
-                r.projects?.status === 'open_for_funding' || r.projects?.status === 'partially_funded'
-              const canDecide = isOpen && r.commitment_status !== 'confirmed'
-              const startDate = r.projects?.financing_date
+            {paged.items.map((entry) => {
+              const row = entry.row
+              const startDate = row.projects?.financing_date ?? null
               const dateChip = startDate ? financingDateChipColors(startDate) : null
+              const poolIndex =
+                entry.kind === 'group-member' ? budgetPoolColorIndexFromId(entry.groupId) : null
+              const poolLeft = budgetPoolLeftBorderColors(poolIndex)
+
               return (
                 <TableRow
-                  key={r.id}
+                  key={row.id}
                   className="cursor-pointer"
-                  onClick={() => void onRowClick(r.project_id)}
+                  onClick={() => void onRowClick(row.project_id)}
                 >
-                  <TableCell>
+                  {entry.kind === 'group-member' && entry.isFirst ? (
+                    <TableCell
+                      rowSpan={entry.rowSpan}
+                      className="sticky left-0 z-10 w-9 border-r border-border/60 bg-muted/15 p-0 align-middle"
+                    >
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onOpenGroup?.(entry.groupId)
+                        }}
+                        className={cn(
+                          'flex h-full min-h-[2.75rem] w-9 flex-col items-center justify-center border-l-4 px-0.5 py-3 text-[10px] font-bold uppercase tracking-wide text-muted-foreground transition-colors hover:bg-muted/40 hover:text-foreground',
+                          poolLeft,
+                        )}
+                        title={`View group (${entry.rowSpan} finances)`}
+                      >
+                        <span className="select-none [writing-mode:vertical-rl] rotate-180">Group</span>
+                      </button>
+                    </TableCell>
+                  ) : entry.kind === 'single' ? (
+                    <TableCell className="sticky left-0 z-10 w-9 bg-background p-0" aria-hidden />
+                  ) : null}
+                  <TableCell className="sticky left-9 z-10 bg-background">
                     {startDate && dateChip ? (
                       <span
                         className={cn(
@@ -406,26 +584,29 @@ function FinancierFinanceList({
                     )}
                   </TableCell>
                   <TableCell className="font-medium">
-                    <span className="text-primary hover:underline">{r.projects?.name}</span>
+                    <span className="text-primary hover:underline">{row.projects?.name}</span>
+                    {entry.kind === 'group-member' ? (
+                      <span className="ml-1.5 text-[10px] font-normal text-muted-foreground">· Group batch</span>
+                    ) : null}
                   </TableCell>
                   <TableCell>
-                    {r.projects?.status ? (
+                    {row.projects?.status ? (
                       <Badge
-                        variant={projectStatusVariant(r.projects.status)}
-                        className={projectStatusTableClassName(r.projects.status)}
+                        variant={projectStatusVariant(row.projects.status)}
+                        className={projectStatusTableClassName(row.projects.status)}
                       >
-                        {PROJECT_STATUS_LABELS[r.projects.status]}
+                        {PROJECT_STATUS_LABELS[row.projects.status]}
                       </Badge>
                     ) : null}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={commitmentStatusVariant(r.commitment_status)} className="text-xs">
-                      {COMMITMENT_STATUS_LABELS[r.commitment_status]}
+                    <Badge variant={commitmentStatusVariant(row.commitment_status)} className="text-xs">
+                      {COMMITMENT_STATUS_LABELS[row.commitment_status]}
                     </Badge>
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{formatPhp(r.current_suggested_amount)}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatPhp(rowDisplayAmount(row))}</TableCell>
                   <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <FinanceDecisionButton projectId={r.project_id} canDecide={canDecide} />
+                    <FinancierRowActionButton row={row} onOpen={onRowClick} />
                   </TableCell>
                 </TableRow>
               )
@@ -433,15 +614,24 @@ function FinancierFinanceList({
           </TableBody>
         </Table>
         <ListPagination
-          page={desktopPage.page}
-          totalPages={desktopPage.totalPages}
-          totalItems={desktopPage.totalItems}
+          page={paged.page}
+          totalPages={paged.totalPages}
+          totalItems={paged.totalItems}
           pageSize={FINANCE_LIST_PAGE_SIZE}
           onPageChange={setPage}
         />
       </ScrollableFinanceTable>
-    </>
   )
+}
+
+function rowExpectedProfit(row: ProjectFinancier): number {
+  const amount = toNumber(row.confirmed_amount)
+  const capital = toNumber(row.projects?.capital_required)
+  const profit = toNumber(row.projects?.expected_profit)
+  if (capital > 0 && amount > 0) {
+    return Math.round(budgetBasedProfitShare(amount, capital, profit) * 100) / 100
+  }
+  return Math.round(profit * toNumber(row.confirmed_percentage) * 100) / 100
 }
 
 export function FinancierDashboardPage() {
@@ -456,21 +646,20 @@ export function FinancierDashboardPage() {
     const [cRes, pRes, confirmedRes] = await Promise.all([
       supabase
         .from('project_financiers')
-        .select('*, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, release_date)')
+        .select(PROJECT_LIST_SELECT)
         .eq('financier_id', profile.id)
         .order('created_at', { ascending: false }),
       supabase
         .from('financier_release_payments')
         .select('*, project_financiers!inner(financier_id), project_releases(*)')
         .eq('project_financiers.financier_id', profile.id)
-        .order('created_at', { ascending: false })
-        .limit(10),
+        .order('created_at', { ascending: false }),
       supabase
         .from('project_financiers')
         .select('project_id, confirmed_amount, commitment_status')
         .eq('commitment_status', 'confirmed'),
     ])
-    setRows((cRes.data as ProjectFinancier[]) ?? [])
+    setRows(await normalizeFinancierRows((cRes.data as ProjectFinancier[]) ?? []))
     setPayments((pRes.data as FinancierReleasePayment[]) ?? [])
     const confirmedMap: Record<string, number> = {}
     for (const row of (confirmedRes.data as Pick<ProjectFinancier, 'project_id' | 'confirmed_amount'>[]) ?? []) {
@@ -480,7 +669,7 @@ export function FinancierDashboardPage() {
     setLoading(false)
   }, [profile])
 
-  const { openFinanceDetail, detailDialog } = useFinancierFinanceDetail(() => void reloadDashboard())
+  const { openFinanceDetail, openGroupDetail, detailDialog } = useFinancierFinanceDetail(() => void reloadDashboard())
 
   useEffect(() => {
     if (!profile) return
@@ -490,13 +679,26 @@ export function FinancierDashboardPage() {
   const stats = useMemo(() => {
     const confirmed = rows.filter((r) => r.commitment_status === 'confirmed')
     const deployed = confirmed.reduce((s, r) => s + toNumber(r.confirmed_amount), 0)
-    const expectedProfit = confirmed.reduce((s, r) => {
-      const totalConfirmed = toNumber(r.confirmed_amount) // personal view approximation when project total unknown
-      void totalConfirmed
-      const projectProfit = toNumber(r.projects?.expected_profit)
-      const pct = toNumber(r.confirmed_percentage)
-      return s + projectProfit * pct
-    }, 0)
+
+    const profitPaidByCommitment = new Map(
+      payments.map((p) => [p.project_financier_id, toNumber(p.profit_amount)]),
+    )
+
+    let profitReceived = 0
+    let profitToReceive = 0
+    for (const r of confirmed) {
+      const expected = rowExpectedProfit(r)
+      const paid = profitPaidByCommitment.get(r.id)
+      const status = r.projects?.status
+      if (paid != null && paid > 0) {
+        profitReceived += paid
+      } else if (status === 'released' || status === 'completed') {
+        profitReceived += expected
+      } else {
+        profitToReceive += expected
+      }
+    }
+
     const byStatus = Object.entries(
       rows.reduce<Record<string, number>>((acc, r) => {
         const st = r.projects?.status ?? 'draft'
@@ -512,8 +714,8 @@ export function FinancierDashboardPage() {
       name: (r.projects?.name ?? 'Finance').slice(0, 14),
       capital: toNumber(r.confirmed_amount),
     }))
-    return { deployed, expectedProfit, byStatus, capitalByProject, count: rows.length }
-  }, [rows])
+    return { deployed, profitReceived, profitToReceive, byStatus, capitalByProject, count: rows.length }
+  }, [rows, payments])
 
   const needsFinance = useMemo(
     () =>
@@ -530,7 +732,8 @@ export function FinancierDashboardPage() {
       <div className="space-y-4">
         <Skeleton className="h-10 w-48" />
         <Skeleton className="h-24 w-full md:hidden" />
-        <div className="hidden gap-4 md:grid md:grid-cols-3">
+        <div className="hidden gap-4 md:grid md:grid-cols-4">
+          <Skeleton className="h-28" />
           <Skeleton className="h-28" />
           <Skeleton className="h-28" />
           <Skeleton className="h-28" />
@@ -543,7 +746,7 @@ export function FinancierDashboardPage() {
     <div>
       <PageHeader title="Dashboard" description={`Welcome, ${profile?.full_name ?? ''}`} />
       <Card className="mb-6 md:hidden">
-        <CardContent className="grid grid-cols-3 gap-2 pt-4">
+        <CardContent className="grid grid-cols-2 gap-3 pt-4">
           <div>
             <p className="text-[10px] leading-tight text-muted-foreground">Assigned finance</p>
             <p className="mt-0.5 text-base font-semibold tabular-nums text-primary">{stats.count}</p>
@@ -553,17 +756,24 @@ export function FinancierDashboardPage() {
             <p className="mt-0.5 text-xs font-semibold tabular-nums text-primary sm:text-sm">{formatPhp(stats.deployed)}</p>
           </div>
           <div>
-            <p className="text-[10px] leading-tight text-muted-foreground">Expected profit</p>
+            <p className="text-[10px] leading-tight text-muted-foreground">Profit received</p>
+            <p className="mt-0.5 text-xs font-semibold tabular-nums text-emerald-700 dark:text-emerald-400 sm:text-sm">
+              {formatPhp(stats.profitReceived)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[10px] leading-tight text-muted-foreground">Profit to receive</p>
             <p className="mt-0.5 text-xs font-semibold tabular-nums text-primary sm:text-sm">
-              {formatPhp(stats.expectedProfit)}
+              {formatPhp(stats.profitToReceive)}
             </p>
           </div>
         </CardContent>
       </Card>
-      <div className="mb-6 hidden gap-4 md:grid md:grid-cols-3">
+      <div className="mb-6 hidden gap-4 md:grid md:grid-cols-2 lg:grid-cols-4">
         <KpiCard label="Assigned finance" value={String(stats.count)} />
         <KpiCard label="Confirmed capital" value={formatPhp(stats.deployed)} />
-        <KpiCard label="Expected profit share" value={formatPhp(stats.expectedProfit)} />
+        <KpiCard label="Profit received" value={formatPhp(stats.profitReceived)} />
+        <KpiCard label="Profit to receive" value={formatPhp(stats.profitToReceive)} />
       </div>
 
       <section className="mb-6 md:rounded-xl md:border md:bg-card md:p-4 md:shadow-sm">
@@ -580,8 +790,10 @@ export function FinancierDashboardPage() {
         ) : (
           <FinancierDecisionList
             rows={needsFinance}
+            allRows={rows}
             confirmedByProject={confirmedByProject}
             onOpenDetail={openFinanceDetail}
+            onOpenGroup={openGroupDetail}
           />
         )}
       </section>
@@ -647,7 +859,7 @@ export function FinancierDashboardPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {payments.map((p) => (
+                {payments.slice(0, 10).map((p) => (
                   <TableRow key={p.id}>
                     <TableCell>{p.project_releases?.actual_date ?? '—'}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatPhp(p.capital_amount)}</TableCell>
@@ -668,50 +880,21 @@ export function FinancierDashboardPage() {
 export function FinancierProjectsPage() {
   const { profile } = useAuth()
   const [rows, setRows] = useState<ProjectFinancier[]>([])
-  const [confirmedByProject, setConfirmedByProject] = useState<Record<string, number>>({})
-  const [pendingPayoutByProject, setPendingPayoutByProject] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
 
   const reloadFinanceList = useCallback(async () => {
     if (!profile) return
-    const [rowsRes, confirmedRes, payoutRes] = await Promise.all([
-      supabase
-        .from('project_financiers')
-        .select('*, projects:project_id(id, name, status, capital_required, expected_profit, financing_date, release_date)')
-        .eq('financier_id', profile.id)
-        .order('created_at', { ascending: false }),
-      supabase
-        .from('project_financiers')
-        .select('project_id, confirmed_amount, commitment_status')
-        .eq('commitment_status', 'confirmed'),
-      supabase
-        .from('financier_release_payments')
-        .select('total_amount, received_at, project_financiers!inner(financier_id, project_id)')
-        .eq('project_financiers.financier_id', profile.id)
-        .is('received_at', null),
-    ])
-    if (rowsRes.error) toast.error(rowsRes.error.message)
-    setRows((rowsRes.data as ProjectFinancier[]) ?? [])
-    const confirmedMap: Record<string, number> = {}
-    for (const row of (confirmedRes.data as Pick<ProjectFinancier, 'project_id' | 'confirmed_amount'>[]) ?? []) {
-      confirmedMap[row.project_id] = (confirmedMap[row.project_id] ?? 0) + toNumber(row.confirmed_amount)
-    }
-    setConfirmedByProject(confirmedMap)
-    const payoutMap: Record<string, number> = {}
-    type PayoutRow = {
-      total_amount: number | string
-      project_financiers: { project_id: string } | { project_id: string }[] | null
-    }
-    for (const row of (payoutRes.data as PayoutRow[] | null) ?? []) {
-      const pf = row.project_financiers
-      const projectId = Array.isArray(pf) ? pf[0]?.project_id : pf?.project_id
-      if (projectId) payoutMap[projectId] = toNumber(row.total_amount)
-    }
-    setPendingPayoutByProject(payoutMap)
+    const { data, error } = await supabase
+      .from('project_financiers')
+      .select(PROJECT_LIST_SELECT)
+      .eq('financier_id', profile.id)
+      .order('created_at', { ascending: false })
+    if (error) toast.error(error.message)
+    setRows(await normalizeFinancierRows((data as ProjectFinancier[]) ?? []))
     setLoading(false)
   }, [profile])
 
-  const { openFinanceDetail, detailDialog } = useFinancierFinanceDetail(() => void reloadFinanceList())
+  const { openFinanceDetail, openGroupDetail, detailDialog } = useFinancierFinanceDetail(() => void reloadFinanceList())
 
   useEffect(() => {
     if (!profile) return
@@ -722,19 +905,14 @@ export function FinancierProjectsPage() {
     <div>
       <PageHeader title="Finance" description="Open finances you can confirm or reject." centered />
       {loading ? (
-        <div className="space-y-3 md:hidden">
-          <Skeleton className="h-48 w-full rounded-2xl" />
-          <Skeleton className="h-32 w-full rounded-2xl" />
-        </div>
+        <Skeleton className="h-64 w-full" />
       ) : rows.length === 0 ? (
         <EmptyState title="No assigned finance" />
       ) : (
         <FinancierFinanceList
           rows={rows}
-          confirmedByProject={confirmedByProject}
-          pendingPayoutByProject={pendingPayoutByProject}
           onRowClick={openFinanceDetail}
-          onOpenDecision={openFinanceDetail}
+          onOpenGroup={openGroupDetail}
         />
       )}
       {detailDialog}
@@ -744,6 +922,7 @@ export function FinancierProjectsPage() {
 
 export function FinancierProjectDetailPage() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const { profile } = useAuth()
   const [row, setRow] = useState<ProjectFinancier | null>(null)
   const [allConfirmed, setAllConfirmed] = useState(0)
@@ -752,6 +931,9 @@ export function FinancierProjectDetailPage() {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [groupDetailOpen, setGroupDetailOpen] = useState(false)
+  const [groupCommitOpen, setGroupCommitOpen] = useState(false)
+  const [groupStartAtDecide, setGroupStartAtDecide] = useState(false)
 
   async function reload() {
     if (!id || !profile) return
@@ -820,7 +1002,13 @@ export function FinancierProjectDetailPage() {
   const myName = profile?.full_name ?? 'You'
   const isOpen = project.status === 'open_for_funding' || project.status === 'partially_funded'
   const isConfirmed = row.commitment_status === 'confirmed'
-  const canAct = isOpen && row.commitment_status !== 'rejected'
+  const canAct = isOpen && row.commitment_status !== 'withdrawn'
+  const isRejected = row.commitment_status === 'rejected'
+  const batchGroupId = (project as { group_id?: string | null }).group_id ?? null
+
+  useEffect(() => {
+    if (batchGroupId) setGroupDetailOpen(true)
+  }, [batchGroupId])
 
   async function confirmCommitment() {
     if (!row) return
@@ -857,14 +1045,48 @@ export function FinancierProjectDetailPage() {
   return (
     <div>
       <PageHeader
-        title={project.name}
-        description={`Suggested ${formatPhp(row.current_suggested_amount)}`}
+        title={batchGroupId ? 'Finance batch' : project.name}
+        description={
+          batchGroupId
+            ? 'One total commitment for the whole batch — split by budget weight.'
+            : `Suggested ${formatPhp(row.current_suggested_amount)}`
+        }
         actions={
           <Button asChild variant="outline">
             <Link to="/app/finance">Back</Link>
           </Button>
         }
       />
+      {batchGroupId ? (
+        <>
+          <GroupFinanceDetailDialog
+            groupId={batchGroupId}
+            open={groupDetailOpen}
+            onOpenChange={(open) => {
+              setGroupDetailOpen(open)
+              if (!open) navigate('/app/finance')
+            }}
+            financierId={profile?.id}
+            onDecisionResolved={() => void reload()}
+            onConfirmBatch={(opts) => {
+              setGroupStartAtDecide(Boolean(opts?.update))
+              setGroupDetailOpen(false)
+              setGroupCommitOpen(true)
+            }}
+          />
+          <GroupCommitmentDialog
+            groupId={batchGroupId}
+            open={groupCommitOpen}
+            startAtDecide={groupStartAtDecide}
+            onOpenChange={(open) => {
+              setGroupCommitOpen(open)
+              if (!open) setGroupStartAtDecide(false)
+            }}
+            onConfirmed={() => void reload()}
+          />
+        </>
+      ) : (
+        <>
       <div className="mb-6 grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="pb-2">
@@ -913,11 +1135,11 @@ export function FinancierProjectDetailPage() {
                 You confirmed {formatPhp(myConfirmed)} for this finance.
                 {isOpen && additionalAllowed > 0
                   ? ` You can add up to ${formatPhp(additionalAllowed)} more while funding is open.`
-                  : null}
+                  : ' Update your amount or cancel if you change your mind.'}
               </p>
-            ) : row.commitment_status === 'rejected' ? (
-              <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                You rejected this finance.
+            ) : isRejected ? (
+              <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+                You rejected this finance. You can still accept if you change your mind.
               </p>
             ) : null}
 
@@ -974,7 +1196,7 @@ export function FinancierProjectDetailPage() {
                 disabled={!canAct || busy || !hasValidNumber || overCeiling || unchanged}
                 onClick={() => setConfirmOpen(true)}
               >
-                {isConfirmed ? 'Update amount' : 'Confirm'}
+                {isConfirmed ? 'Update amount' : isRejected ? 'Accept' : 'Confirm'}
               </Button>
               <Button
                 variant="destructive"
@@ -982,7 +1204,7 @@ export function FinancierProjectDetailPage() {
                 disabled={!canAct || busy}
                 onClick={() => void rejectCommitment()}
               >
-                Reject
+                {isConfirmed ? 'Cancel commitment' : 'Reject'}
               </Button>
             </div>
 
@@ -1032,6 +1254,8 @@ export function FinancierProjectDetailPage() {
           </CardContent>
         </Card>
       </div>
+        </>
+      )}
     </div>
   )
 }
@@ -1046,12 +1270,12 @@ export function FinancierCommitmentsPage() {
     if (!profile) return
     void supabase
       .from('project_financiers')
-      .select('*, projects:project_id(id, name, status, expected_profit)')
+      .select('*, projects:project_id(id, name, status, expected_profit, financing_date, group_id)')
       .eq('financier_id', profile.id)
       .order('updated_at', { ascending: false })
-      .then(({ data, error }) => {
+      .then(async ({ data, error }) => {
         if (error) toast.error(error.message)
-        setRows((data as ProjectFinancier[]) ?? [])
+        setRows(await normalizeFinancierRows((data as ProjectFinancier[]) ?? []))
         setLoading(false)
       })
   }, [profile])
@@ -1083,8 +1307,18 @@ export function FinancierCommitmentsPage() {
                     className="cursor-pointer"
                     onClick={() => void openFinanceDetail(r.project_id)}
                   >
-                    <TableCell>
-                      <span className="text-primary hover:underline">{r.projects?.name}</span>
+                    <TableCell className="max-w-[11rem] sm:max-w-none">
+                      <div className="flex items-center gap-1.5">
+                        <span className="min-w-0 truncate text-primary">{r.projects?.name}</span>
+                        {r.projects?.group_id ? (
+                          <Badge
+                            variant="outline"
+                            className="h-5 shrink-0 px-1.5 py-0 text-[10px] leading-none"
+                          >
+                            Batch
+                          </Badge>
+                        ) : null}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <Badge variant={commitmentStatusVariant(r.commitment_status)}>

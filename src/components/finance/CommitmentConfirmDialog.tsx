@@ -7,7 +7,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { formatPhp } from '@/lib/money'
+import { formatPercent, formatPhp } from '@/lib/money'
+
+export type CommitmentSplitPreview = {
+  projectName: string
+  confirmedAmount: number
+  weightRatio: number
+  expectedProfitShare: number
+}
 
 export function CommitmentConfirmDialog({
   open,
@@ -22,6 +29,8 @@ export function CommitmentConfirmDialog({
   previousAmount,
   busy,
   onConfirm,
+  splits,
+  expectedProfitTotal,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -35,6 +44,8 @@ export function CommitmentConfirmDialog({
   previousAmount?: number
   busy?: boolean
   onConfirm: () => void
+  splits?: CommitmentSplitPreview[]
+  expectedProfitTotal?: number
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -78,6 +89,42 @@ export function CommitmentConfirmDialog({
             <p className="text-center text-xs text-muted-foreground">
               Current commitment: <span className="font-medium text-foreground">{formatPhp(previousAmount)}</span>
             </p>
+          ) : null}
+
+          {splits && splits.length > 0 ? (
+            <div className="space-y-2 rounded-lg border border-border/40 bg-background/70 p-3">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Split by budget weight
+              </p>
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="text-left text-muted-foreground">
+                    <th className="pb-1 font-medium">Finance</th>
+                    <th className="pb-1 text-right font-medium">Share</th>
+                    <th className="pb-1 text-right font-medium">Amount</th>
+                    <th className="pb-1 text-right font-medium">Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {splits.map((s) => (
+                    <tr key={s.projectName} className="border-t border-border/40">
+                      <td className="py-1.5 font-medium">{s.projectName}</td>
+                      <td className="py-1.5 text-right tabular-nums text-muted-foreground">
+                        {formatPercent(s.weightRatio * 100)}
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">{formatPhp(s.confirmedAmount)}</td>
+                      <td className="py-1.5 text-right tabular-nums">{formatPhp(s.expectedProfitShare)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {expectedProfitTotal != null ? (
+                <div className="flex justify-between border-t pt-2 text-sm font-semibold">
+                  <span>Your expected profit</span>
+                  <span className="tabular-nums text-primary">{formatPhp(expectedProfitTotal)}</span>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
 

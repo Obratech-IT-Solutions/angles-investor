@@ -30,6 +30,22 @@ Logical column definitions for MVP entities. Types are PostgreSQL-oriented. Exec
 | updated_at | timestamptz | N | Updated |
 | deactivated_at | timestamptz | Y | Soft deactivate time |
 
+## finance_groups
+
+| Column | Type | Null | Description |
+| --- | --- | --- | --- |
+| id | uuid | N | PK |
+| name | text | N | Batch label |
+| financing_date | date | N | Shared start date for all lines |
+| status | text | N | Default `open_for_funding` |
+| description | text | Y | Optional shared description |
+| notes | text | Y | Optional shared notes |
+| created_by | uuid | N | FK profiles (admin) |
+| created_at | timestamptz | N | Auto |
+| updated_at | timestamptz | N | Auto |
+
+RPCs: `admin_create_finance_group`, `financier_confirm_group_commitment`, `get_finance_group_summary`.
+
 ## projects
 
 | Column | Type | Null | Description |
@@ -48,6 +64,7 @@ Logical column definitions for MVP entities. Types are PostgreSQL-oriented. Exec
 | notes | text | Y | Optional |
 | status | text | N | Project status enum |
 | created_by | uuid | N | FK profiles |
+| group_id | uuid | Y | FK finance_groups; null = standalone finance |
 | created_at | timestamptz | N | Auto |
 | updated_at | timestamptz | N | Auto |
 

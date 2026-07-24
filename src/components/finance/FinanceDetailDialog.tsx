@@ -20,6 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { buildFinancierColorMap, financierColorFromMap } from '@/lib/financierColors'
 import { adminConfirmedAmountDraft } from '@/lib/commitments'
 import {
+  budgetBasedProfitShare,
   financingTimeProgress,
   formatPercent,
   formatPhp,
@@ -27,6 +28,7 @@ import {
   moneyInputFromValue,
   remainingGap,
   toNumber,
+  totalReceivable,
 } from '@/lib/money'
 import { commitmentStatusVariant, projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
@@ -67,13 +69,22 @@ function financierName(row: ProjectFinancier): string {
 }
 
 function commitmentAmount(row: ProjectFinancier): string {
+  return formatPhp(commitmentAmountValue(row))
+}
+
+function commitmentAmountValue(row: ProjectFinancier): number {
   if (row.commitment_status === 'confirmed' && toNumber(row.confirmed_amount) > 0) {
-    return formatPhp(row.confirmed_amount)
+    return toNumber(row.confirmed_amount)
   }
   if (row.commitment_status === 'submitted' && toNumber(row.willing_amount) > 0) {
-    return formatPhp(row.willing_amount)
+    return toNumber(row.willing_amount)
   }
-  return formatPhp(row.current_suggested_amount)
+  return toNumber(row.current_suggested_amount)
+}
+
+function rowProfitShare(row: ProjectFinancier, capitalRequired: number, expectedProfit: number): number {
+  const amount = commitmentAmountValue(row)
+  return Math.round(budgetBasedProfitShare(amount, capitalRequired, expectedProfit) * 100) / 100
 }
 
 function AdminAllocationMobileList({
@@ -133,16 +144,23 @@ function FinancierContributionsMobileList({
   rows,
   financierColorMap,
   financierId,
+  capitalRequired,
+  expectedProfit,
 }: {
   rows: ProjectFinancier[]
   financierColorMap: Map<string, string>
   financierId?: string
+  capitalRequired: number
+  expectedProfit: number
 }) {
   return (
     <ul className="space-y-2 md:hidden">
       {rows.map((r) => {
         const isMe = Boolean(financierId && r.financier_id === financierId)
         const color = financierColorFromMap(financierColorMap, r.financier_id, financierName(r))
+        const amount = commitmentAmountValue(r)
+        const profit = rowProfitShare(r, capitalRequired, expectedProfit)
+        const total = totalReceivable(amount, profit)
         return (
           <li
             key={r.id}
@@ -160,7 +178,12 @@ function FinancierContributionsMobileList({
                 {COMMITMENT_STATUS_LABELS[r.commitment_status]}
               </Badge>
             </div>
-            <p className="mt-1.5 text-right text-sm font-semibold tabular-nums">{commitmentAmount(r)}</p>
+            <div className="mt-1.5 space-y-0.5 text-right text-[10px] tabular-nums sm:text-xs">
+              <p className="text-sm font-semibold">{formatPhp(amount)}</p>
+              <p className="text-muted-foreground">
+                Profit {formatPhp(profit)} · Total {formatPhp(total)}
+              </p>
+            </div>
           </li>
         )
       })}
@@ -273,8 +296,14 @@ export function FinanceDetailDialog({
       setWilling('')
       return
     }
-    setWilling(moneyInputFromValue(myRow.willing_amount ?? myRow.current_suggested_amount ?? ''))
-  }, [myRow?.id, myRow?.willing_amount, myRow?.current_suggested_amount])
+    setWilling(
+      moneyInputFromValue(
+        myRow.commitment_status === 'confirmed'
+          ? (myRow.confirmed_amount ?? myRow.willing_amount ?? '')
+          : (myRow.willing_amount ?? myRow.current_suggested_amount ?? ''),
+      ),
+    )
+  }, [myRow?.id, myRow?.commitment_status, myRow?.confirmed_amount, myRow?.willing_amount, myRow?.current_suggested_amount])
 
   useEffect(() => {
     if (mode !== 'admin') return
@@ -333,6 +362,10 @@ export function FinanceDetailDialog({
   const confirmedTotal = rows
     .filter((r) => r.commitment_status === 'confirmed')
     .reduce((s, r) => s + toNumber(r.confirmed_amount), 0)
+  const myConfirmedAmount = toNumber(myRow?.confirmed_amount)
+  const othersConfirmed =
+    confirmedTotal -
+    (myRow?.commitment_status === 'confirmed' ? myConfirmedAmount : 0)
   const progress = fundingProgress(confirmedTotal, toNumber(project.capital_required))
   const releaseLabel = project.release_date || project.calculated_expected_release || 'TBA'
   const timeProgress = financingTimeProgress(
@@ -351,19 +384,27 @@ export function FinanceDetailDialog({
   )
 
   const financeIsOpen =
-    project.status === 'open_for_funding' || project.status === 'partially_funded'
-  const canDecide = Boolean(
+    project.status === 'open_for_funding' ||
+    project.status === 'partially_funded' ||
+    project.status === 'active'
+  const isGroupFinance = Boolean(project.group_id)
+  const canManageCommitment = Boolean(
     mode === 'financier' &&
       myRow &&
       financeIsOpen &&
-      !['confirmed', 'rejected', 'withdrawn'].includes(myRow.commitment_status),
+      myRow.commitment_status !== 'withdrawn' &&
+      !isGroupFinance,
   )
+  const isRejected = myRow?.commitment_status === 'rejected'
+  const isConfirmedCommitment = myRow?.commitment_status === 'confirmed'
   const gap = remainingGap(confirmedTotal, toNumber(project.capital_required))
   const suggested = toNumber(myRow?.current_suggested_amount)
-  const ceiling = Math.max(0, toNumber(project.capital_required) - confirmedTotal)
+  const ceiling = Math.max(0, toNumber(project.capital_required) - othersConfirmed)
   const enteredAmount = toNumber(willing)
   const hasValidNumber = willing !== '' && enteredAmount > 0
   const overCeiling = hasValidNumber && enteredAmount > ceiling + 0.001
+  const unchanged =
+    isConfirmedCommitment && hasValidNumber && Math.abs(enteredAmount - myConfirmedAmount) < 0.01
   const canAdminSetAllocations = mode === 'admin' && !['cancelled', 'completed'].includes(project.status)
   const adminDraftTotal = invited.reduce((s, r) => s + toNumber(adminAmounts[r.id] || 0), 0)
   const adminOverCapital = adminDraftTotal > toNumber(project.capital_required)
@@ -381,7 +422,7 @@ export function FinanceDetailDialog({
       return
     }
     setConfirmOpen(false)
-    toast.success('Commitment confirmed')
+    toast.success(isConfirmedCommitment ? 'Commitment updated' : 'Commitment confirmed')
     onDecisionResolved?.()
     void loadData()
   }
@@ -397,7 +438,7 @@ export function FinanceDetailDialog({
       toast.error(error.message)
       return
     }
-    toast.success('Commitment rejected')
+    toast.success(isConfirmedCommitment ? 'Commitment cancelled' : 'Commitment rejected')
     onDecisionResolved?.()
     onOpenChange(false)
   }
@@ -479,7 +520,11 @@ export function FinanceDetailDialog({
             </Badge>
           </DialogTitle>
           <DialogDescription>
-            {mode === 'admin' ? 'Finance overview and commitments' : 'Finance details and your commitment'}
+            {mode === 'admin'
+              ? 'Finance overview and commitments'
+              : isGroupFinance
+                ? 'Finance details — confirm or update your amount from the Group view'
+                : 'Finance details and your commitment'}
           </DialogDescription>
         </DialogHeader>
 
@@ -780,6 +825,8 @@ export function FinanceDetailDialog({
                       rows={invited}
                       financierColorMap={financierColorMap}
                       financierId={financierId}
+                      capitalRequired={toNumber(project.capital_required)}
+                      expectedProfit={toNumber(project.expected_profit)}
                     />
                   </div>
                   <div className="hidden md:block">
@@ -788,13 +835,20 @@ export function FinanceDetailDialog({
                         <TableRow>
                           <TableHead>Financier</TableHead>
                           <TableHead>Status</TableHead>
-                          <TableHead className="text-right">Amount</TableHead>
+                          <TableHead className="text-right text-[10px]">Amount</TableHead>
+                          <TableHead className="text-right text-[10px]">Profit</TableHead>
+                          <TableHead className="text-right text-[10px]">Total</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {invited.map((r) => {
                           const isMe = Boolean(financierId && r.financier_id === financierId)
                           const color = financierColorFromMap(financierColorMap, r.financier_id, financierName(r))
+                          const amount = commitmentAmountValue(r)
+                          const capitalRequired = toNumber(project.capital_required)
+                          const expectedProfit = toNumber(project.expected_profit)
+                          const profit = rowProfitShare(r, capitalRequired, expectedProfit)
+                          const total = totalReceivable(amount, profit)
                           return (
                             <TableRow key={r.id} className={isMe ? 'bg-muted/30' : undefined}>
                               <TableCell>
@@ -809,7 +863,13 @@ export function FinanceDetailDialog({
                                   {COMMITMENT_STATUS_LABELS[r.commitment_status]}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="text-right tabular-nums">{commitmentAmount(r)}</TableCell>
+                              <TableCell className="text-right text-xs tabular-nums">{formatPhp(amount)}</TableCell>
+                              <TableCell className="text-right text-[10px] tabular-nums text-muted-foreground">
+                                {formatPhp(profit)}
+                              </TableCell>
+                              <TableCell className="text-right text-xs font-medium tabular-nums">
+                                {formatPhp(total)}
+                              </TableCell>
                             </TableRow>
                           )
                         })}
@@ -832,9 +892,20 @@ export function FinanceDetailDialog({
             </div>
           ) : null}
 
-          {canDecide && myRow ? (
+          {canManageCommitment && myRow ? (
             <div className="rounded-lg border border-primary/20 bg-primary/5 p-4">
-              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Your decision</p>
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {isConfirmedCommitment ? 'Manage commitment' : 'Your decision'}
+              </p>
+              {isRejected ? (
+                <p className="mb-3 text-xs text-muted-foreground">
+                  You rejected this finance. You can still accept if you change your mind.
+                </p>
+              ) : isConfirmedCommitment ? (
+                <p className="mb-3 text-xs text-muted-foreground">
+                  You confirmed {formatPhp(myConfirmedAmount)}. Update your amount or cancel if you change your mind.
+                </p>
+              ) : null}
               <div className="space-y-2">
                 <Label htmlFor="finance-detail-willing" className="text-xs leading-none">
                   How much do you want to commit?
@@ -867,25 +938,37 @@ export function FinanceDetailDialog({
                   </p>
                 ) : null}
               </div>
-              <div className="mt-4 grid grid-cols-2 gap-2">
+              <div className={cn('mt-4 grid gap-2', isConfirmedCommitment || isRejected ? 'grid-cols-1 sm:grid-cols-2' : 'grid-cols-2')}>
                 <Button
                   className="h-10"
                   size="sm"
-                  disabled={decisionBusy || !hasValidNumber || overCeiling}
+                  disabled={decisionBusy || !hasValidNumber || overCeiling || unchanged}
                   onClick={() => setConfirmOpen(true)}
                 >
-                  Confirm
+                  {isConfirmedCommitment ? 'Update amount' : isRejected ? 'Accept' : 'Confirm'}
                 </Button>
-                <Button
-                  variant="outline"
-                  className="h-10"
-                  size="sm"
-                  disabled={decisionBusy}
-                  onClick={() => void rejectCommitment()}
-                >
-                  Reject
-                </Button>
+                {!isRejected ? (
+                  <Button
+                    variant={isConfirmedCommitment ? 'destructive' : 'outline'}
+                    className="h-10"
+                    size="sm"
+                    disabled={decisionBusy}
+                    onClick={() => void rejectCommitment()}
+                  >
+                    {isConfirmedCommitment ? 'Cancel commitment' : 'Reject'}
+                  </Button>
+                ) : null}
               </div>
+            </div>
+          ) : null}
+
+          {mode === 'financier' && myRow && isGroupFinance && financeIsOpen ? (
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-4">
+              <p className="text-xs text-muted-foreground">
+                This finance is part of a batch. Use the{' '}
+                <span className="font-semibold text-foreground">Group</span> label in the finance list to confirm or
+                update your total batch commitment.
+              </p>
             </div>
           ) : null}
 
@@ -903,7 +986,7 @@ export function FinanceDetailDialog({
           </Button>
         </DialogFooter>
 
-        {canDecide && myRow ? (
+        {canManageCommitment && myRow ? (
           <CommitmentConfirmDialog
             open={confirmOpen}
             onOpenChange={setConfirmOpen}
@@ -912,7 +995,9 @@ export function FinanceDetailDialog({
             stillNeeded={gap}
             suggested={suggested}
             capitalRequired={toNumber(project.capital_required)}
-            fundedAfter={confirmedTotal + enteredAmount}
+            fundedAfter={confirmedTotal - (isConfirmedCommitment ? myConfirmedAmount : 0) + enteredAmount}
+            isUpdate={isConfirmedCommitment}
+            previousAmount={myConfirmedAmount}
             busy={decisionBusy}
             onConfirm={() => void confirmCommitment()}
           />
