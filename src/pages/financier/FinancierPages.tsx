@@ -1602,14 +1602,20 @@ export function FinancierAnalyticsPage() {
       const capitalRequired = toNumber(row.projects?.capital_required)
       const expectedProfit = toNumber(row.projects?.expected_profit)
       const expectedShare = budgetBasedProfitShare(myConfirmed, capitalRequired, expectedProfit)
-      const myProfitShare = budget?.manualProfit ?? expectedShare
       const ownCapital = budget?.ownCapital ?? myConfirmed
       const lenders = budget?.lenders ?? []
 
+      if (lenders.length === 0) {
+        // Solo finance — full expected gain (same as Budget list profit column).
+        addPerson('You', toNumber(ownCapital) || myConfirmed, expectedShare)
+        continue
+      }
+
+      // Chip-in finance — split expected gain between you and chip-in partners.
       const summary = calculateBudgetSummary({
         ownCapital,
         myConfirmed,
-        myProfitShare,
+        myProfitShare: expectedShare,
         myCapitalReturn: myConfirmed,
         lenders,
       })
@@ -1619,6 +1625,8 @@ export function FinancierAnalyticsPage() {
         addPerson(lender.lender_name, lender.borrowed_amount, lender.profit_portion ?? 0)
       }
     }
+
+    const totalGain = rows.reduce((s, row) => s + rowDisplayProfit(row), 0)
 
     const people = [...byPerson.values()]
       .filter((p) => p.capital > 0 || p.profit > 0)
@@ -1656,7 +1664,8 @@ export function FinancierAnalyticsPage() {
       capitalPie,
       profitPie,
       chipInCapital: chipIns.reduce((s, p) => s + p.capital, 0),
-      chipInProfit: chipIns.reduce((s, p) => s + p.profit, 0),
+      chipInProfit: totalGain,
+      totalGain,
     }
   }, [rows, budgetByProject])
 
@@ -1705,7 +1714,8 @@ export function FinancierAnalyticsPage() {
             <CardHeader>
               <CardTitle className="text-base">Budget & chip-in breakdown</CardTitle>
               <p className="text-sm text-muted-foreground">
-                Who chipped in to your finances, their capital and gain, and your own share.
+                Who chipped in to your finances, their capital and gain, and your own share — including solo
+                finances with no chip-ins.
               </p>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -1720,7 +1730,7 @@ export function FinancierAnalyticsPage() {
                     />
                     <KpiCard label="Your gain" value={formatPhp(chipInAnalytics.you?.profit ?? 0)} />
                     <KpiCard label="Chip-in capital" value={formatPhp(chipInAnalytics.chipInCapital)} />
-                    <KpiCard label="Chip-in gain" value={formatPhp(chipInAnalytics.chipInProfit)} />
+                    <KpiCard label="Total gain" value={formatPhp(chipInAnalytics.totalGain)} />
                   </div>
 
                   <div className="grid gap-6 md:grid-cols-2">
@@ -1817,7 +1827,7 @@ function AnalyticsPieSplit({
               )
             })}
           </ul>
-          <div className="h-28 w-28 shrink-0 sm:h-32 sm:w-32">
+          <div className="h-28 w-28 shrink-0 select-none sm:h-32 sm:w-32 [&_.recharts-responsive-container]:border-0 [&_.recharts-surface]:outline-none [&_.recharts-wrapper]:border-0 [&_.recharts-wrapper]:outline-none">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -1827,15 +1837,17 @@ function AnalyticsPieSplit({
                   innerRadius="52%"
                   outerRadius="88%"
                   paddingAngle={data.length > 1 ? 2 : 0}
+                  isAnimationActive={false}
+                  stroke="none"
                 >
                   {data.map((entry, i) => (
                     <Cell
                       key={entry.key}
                       fill={entry.color ?? FINANCIER_COLORS[i % FINANCIER_COLORS.length]}
+                      stroke="none"
                     />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v: number) => formatPhp(v)} />
               </PieChart>
             </ResponsiveContainer>
           </div>
