@@ -90,6 +90,15 @@ After that, create financiers from **Admin → Financiers** (Edge Function `admi
 
 Build command: `npm run build` · Output: `dist`
 
+### Custom domain (e.g. `angels.obratech.net`)
+
+In **Supabase → Authentication → URL Configuration**, add:
+
+- **Site URL:** `https://angels.obratech.net`
+- **Redirect URLs:** `https://angels.obratech.net/**` (keep your Vercel `*.vercel.app/**` URLs too)
+
+Without these, PIN login can fail after you attach a new domain.
+
 ## Documentation
 
 - [docs/00-master-index.md](docs/00-master-index.md)

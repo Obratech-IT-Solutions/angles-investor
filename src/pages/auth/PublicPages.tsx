@@ -10,6 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { homePathForRole, useAuth } from '@/contexts/AuthContext'
 import { playKaChingOnLandingOpen } from '@/lib/kaChing'
+import { invokeEdgeFunction } from '@/lib/edgeFunctions'
 import { supabase } from '@/lib/supabase'
 import type { Profile } from '@/types'
 
@@ -41,11 +42,12 @@ export function LandingPage() {
   const [finBusy, setFinBusy] = useState(false)
 
   useEffect(() => {
-    void supabase.functions
-      .invoke('list-financiers-public', { body: {} })
-      .then(({ data, error }) => {
-        if (error || data?.error) return
-        setFinanciers((data?.financiers as DirectoryFinancier[]) ?? [])
+    void invokeEdgeFunction<{ financiers?: DirectoryFinancier[] }>('list-financiers-public')
+      .then((data) => {
+        setFinanciers(data.financiers ?? [])
+      })
+      .catch(() => {
+        /* directory load is best-effort on landing */
       })
   }, [])
 
@@ -72,15 +74,16 @@ export function LandingPage() {
   async function submitAdminPin(pin: string) {
     setAdminBusy(true)
     try {
-      const { data, error } = await supabase.functions.invoke('admin-pin-login', { body: { pin } })
-      if (error) throw new Error(error.message)
-      if (data?.error) throw new Error(String(data.error))
+      const data = await invokeEdgeFunction<{
+        token_hash: string
+        profile?: Profile
+      }>('admin-pin-login', { pin })
       const authSession = await completePinSession(data.token_hash)
-      const profile = await establishSession(authSession, (data.profile as Profile | undefined) ?? null)
-      if (!profile) throw new Error('Could not load admin profile. Try again.')
+      const nextProfile = await establishSession(authSession, data.profile ?? null)
+      if (!nextProfile) throw new Error('Could not load admin profile. Try again.')
       toast.success('Welcome, Admin')
       setAdminOpen(false)
-      navigate(homePathForRole(profile.role), { replace: true })
+      navigate(homePathForRole(nextProfile.role), { replace: true })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Admin login failed')
       setAdminPin('')
@@ -93,25 +96,27 @@ export function LandingPage() {
     if (!selected) return
     setFinBusy(true)
     try {
-      const { data, error } = await supabase.functions.invoke('financier-pin-login', {
-        body: { profile_id: selected.id, pin },
+      const data = await invokeEdgeFunction<{
+        token_hash: string
+        profile?: Profile
+      }>('financier-pin-login', {
+        profile_id: selected.id,
+        pin,
       })
-      if (error) throw new Error(error.message)
-      if (data?.error) throw new Error(String(data.error))
       const authSession = await completePinSession(data.token_hash)
-      const profile = await establishSession(authSession, (data.profile as Profile | undefined) ?? null)
-      if (!profile) throw new Error('Could not load your profile. Try again.')
-      if (profile.account_status !== 'active') {
+      const nextProfile = await establishSession(authSession, data.profile ?? null)
+      if (!nextProfile) throw new Error('Could not load your profile. Try again.')
+      if (nextProfile.account_status !== 'active') {
         await supabase.auth.signOut()
         throw new Error(
-          profile.account_status === 'locked'
+          nextProfile.account_status === 'locked'
             ? 'Account is locked. Contact an administrator.'
             : 'Account is inactive. Contact an administrator.',
         )
       }
       toast.success(`Welcome, ${selected.display_name || selected.full_name}`)
       setSelected(null)
-      navigate(homePathForRole(profile.role), { replace: true })
+      navigate(homePathForRole(nextProfile.role), { replace: true })
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Login failed')
       setFinPin('')
