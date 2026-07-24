@@ -30,7 +30,7 @@ import {
   toNumber,
   totalReceivable,
 } from '@/lib/money'
-import { commitmentStatusVariant, projectStatusClassName, projectStatusVariant } from '@/lib/status'
+import { commitmentStatusVariant, financeAllowsCapitalCommitment, projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -383,10 +383,7 @@ export function FinanceDetailDialog({
     mode === 'financier' && myReleasePayment && releaseIsLive && !myReleasePayment.received_at,
   )
 
-  const financeIsOpen =
-    project.status === 'open_for_funding' ||
-    project.status === 'partially_funded' ||
-    project.status === 'active'
+  const financeIsOpen = financeAllowsCapitalCommitment(project.status)
   const isGroupFinance = Boolean(project.group_id)
   const canManageCommitment = Boolean(
     mode === 'financier' &&
@@ -889,6 +886,17 @@ export function FinanceDetailDialog({
             <div>
               <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Description</p>
               <p className="text-muted-foreground">{project.description}</p>
+            </div>
+          ) : null}
+
+          {mode === 'financier' && myRow && isConfirmedCommitment && !canManageCommitment && !isGroupFinance ? (
+            <div className="rounded-lg border border-border/40 bg-muted/20 p-4">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Your commitment</p>
+              <p className="mt-2 text-2xl font-bold tabular-nums text-primary">{formatPhp(myConfirmedAmount)}</p>
+              <p className="mt-2 text-xs text-muted-foreground">
+                This finance is {PROJECT_STATUS_LABELS[project.status] ?? project.status} — capital can no longer be
+                changed.
+              </p>
             </div>
           ) : null}
 

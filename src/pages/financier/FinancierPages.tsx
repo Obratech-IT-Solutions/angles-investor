@@ -42,7 +42,7 @@ import {
   toNumber,
   totalReceivable,
 } from '@/lib/money'
-import { commitmentStatusVariant, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
+import { commitmentStatusVariant, financeAllowsCapitalCommitment, projectStatusClassName, projectStatusTableClassName, projectStatusVariant, releaseStatusVariant } from '@/lib/status'
 import { budgetPoolBorderColors, budgetPoolColorIndexFromId, budgetPoolLeftBorderColors, financingDateChipColors, formatFinancingDateChip, FINANCIER_COLORS } from '@/lib/financierColors'
 import { calculateBudgetSummary, type BudgetLenderInput } from '@/lib/budget'
 import { supabase } from '@/lib/supabase'
@@ -230,11 +230,7 @@ function rowDisplayTotal(row: ProjectFinancier): number {
 
 function rowCanDecide(row: ProjectFinancier): boolean {
   const status = row.projects?.status
-  const isOpen =
-    status === 'open_for_funding' ||
-    status === 'partially_funded' ||
-    status === 'active'
-  return isOpen && row.commitment_status !== 'withdrawn'
+  return financeAllowsCapitalCommitment(status ?? '') && row.commitment_status !== 'withdrawn'
 }
 
 function FinancierRowActionButton({
@@ -1048,7 +1044,7 @@ export function FinancierProjectDetailPage() {
   const unchanged =
     row.commitment_status === 'confirmed' && hasValidNumber && Math.abs(enteredAmount - myConfirmed) < 0.01
   const myName = profile?.full_name ?? 'You'
-  const isOpen = project.status === 'open_for_funding' || project.status === 'partially_funded'
+  const isOpen = financeAllowsCapitalCommitment(project.status)
   const isConfirmed = row.commitment_status === 'confirmed'
   const canAct = isOpen && row.commitment_status !== 'withdrawn'
   const isRejected = row.commitment_status === 'rejected'
@@ -1183,7 +1179,9 @@ export function FinancierProjectDetailPage() {
                 You confirmed {formatPhp(myConfirmed)} for this finance.
                 {isOpen && additionalAllowed > 0
                   ? ` You can add up to ${formatPhp(additionalAllowed)} more while funding is open.`
-                  : ' Update your amount or cancel if you change your mind.'}
+                  : isOpen
+                    ? ' Update your amount or cancel if you change your mind.'
+                    : ' Capital can no longer be changed for this finance.'}
               </p>
             ) : isRejected ? (
               <p className="rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">

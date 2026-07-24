@@ -32,6 +32,7 @@ import {
 } from '@/lib/money'
 import {
   commitmentStatusVariant,
+  financeAllowsCapitalCommitment,
   projectStatusClassName,
   projectStatusVariant,
 } from '@/lib/status'
@@ -275,10 +276,7 @@ export function GroupFinanceDetailDialog({
     [financiers, financierColorMap],
   )
 
-  const lineAllowsCommitment = (status: string) =>
-    status === 'open_for_funding' ||
-    status === 'partially_funded' ||
-    status === 'active'
+  const lineAllowsCommitment = (status: string) => financeAllowsCapitalCommitment(status)
 
   const batchOpenForCommitment = lines.every((l) => lineAllowsCommitment(l.status))
   const canAct =

@@ -26,7 +26,7 @@ import {
   moneyInputFromValue,
   toNumber,
 } from '@/lib/money'
-import { projectStatusClassName, projectStatusVariant } from '@/lib/status'
+import { financeAllowsCapitalCommitment, projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import {
@@ -127,9 +127,7 @@ export function GroupCommitmentDialog({
 
   const profitTotal = groupProfitShare(hasValid ? entered : 0, groupBudget, groupProfit)
   const progress = fundingProgress(groupConfirmed, groupBudget)
-  const allOpen = lines.every(
-    (l) => l.status === 'open_for_funding' || l.status === 'partially_funded',
-  )
+  const allOpen = lines.every((l) => financeAllowsCapitalCommitment(l.status))
   const canAct = allOpen && lines.length >= 2
   const isRejected = lines.every((l) => l.my_status === 'rejected')
   const isConfirmed = myPrevious > 0 && !isRejected

@@ -1,5 +1,10 @@
 import type { CommitmentStatus, ProjectStatus, ReleaseStatus } from '@/types'
 
+/** Financiers may change committed capital only while funding is still open. */
+export function financeAllowsCapitalCommitment(status: ProjectStatus | string): boolean {
+  return status === 'open_for_funding' || status === 'partially_funded'
+}
+
 export function projectStatusVariant(
   status: ProjectStatus,
 ): 'default' | 'secondary' | 'outline' | 'success' | 'warning' | 'destructive' {
