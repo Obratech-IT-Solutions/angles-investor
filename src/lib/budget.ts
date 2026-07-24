@@ -44,6 +44,41 @@ export type BudgetSummary = {
 }
 
 const STAKE_TOLERANCE = 1
+/** Centavo-level tolerance for pool profit/budget rounding. */
+export const POOL_MONEY_TOLERANCE = 0.05
+
+/** Profit left unallocated when budget is not fully filled (same % as budget gap). */
+export function profitUnallocatedFromBudgetGap(
+  budgetGap: number,
+  budgetMax: number,
+  profitMax: number,
+): number {
+  if (budgetMax <= 0 || budgetGap <= 0 || profitMax <= 0) return 0
+  return roundMoney(profitMax * (budgetGap / budgetMax))
+}
+
+/** Profit shortfall that should block save — ignores share tied to an unfilled budget gap. */
+export function poolProfitShortfallBlocking(
+  assignedProfit: number,
+  profitMax: number,
+  budgetGap: number,
+  budgetMax: number,
+): number {
+  if (profitMax <= 0) return 0
+  const shortfall = roundMoney(profitMax - assignedProfit)
+  if (shortfall <= POOL_MONEY_TOLERANCE) return 0
+  const allowed = profitUnallocatedFromBudgetGap(budgetGap, budgetMax, profitMax)
+  return Math.max(0, roundMoney(shortfall - allowed))
+}
+
+export function poolBudgetFillPercent(filled: number, budgetMax: number): string {
+  if (budgetMax <= 0) return '0.00'
+  const pct = (filled / budgetMax) * 100
+  if (pct >= 99.995 && filled < budgetMax - POOL_MONEY_TOLERANCE) {
+    return (Math.floor(pct * 100) / 100).toFixed(2)
+  }
+  return pct.toFixed(2)
+}
 
 export function lenderProfitPortion(
   promiseType: LenderPromiseType,

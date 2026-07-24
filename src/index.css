@@ -109,4 +109,12 @@
   transform-origin: center;
 }
 
+/* Recharts pie charts — legend already shows values; suppress focus box + hover tooltip glitches */
+.recharts-responsive-container,
+.recharts-wrapper,
+.recharts-surface {
+  outline: none !important;
+  border: none !important;
+}
+
 

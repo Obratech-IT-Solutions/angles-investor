@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import { ArrowLeft, CheckSquare, Plus, Trash2, Wallet } from 'lucide-react'
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
+import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { PageHeader, EmptyState } from '@/components/shared/PageBits'
 import { ListPagination, paginateRows } from '@/components/shared/ListPagination'
 import { Badge } from '@/components/ui/badge'
@@ -20,7 +20,18 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { useAuth } from '@/contexts/AuthContext'
-import { calculateBudgetSummary, computeProfitSplits, distributeProportionalAmounts, redistributeProfitSplits, splitAmountAcrossShares, type ProfitSplitParty } from '@/lib/budget'
+import {
+  calculateBudgetSummary,
+  computeProfitSplits,
+  distributeProportionalAmounts,
+  POOL_MONEY_TOLERANCE,
+  poolBudgetFillPercent,
+  poolProfitShortfallBlocking,
+  profitUnallocatedFromBudgetGap,
+  redistributeProfitSplits,
+  splitAmountAcrossShares,
+  type ProfitSplitParty,
+} from '@/lib/budget'
 import {
   dissolveBudgetPool,
   distributeBudgetsAcrossProjects,
@@ -214,7 +225,7 @@ function BudgetPieSplit({
               )
             })}
           </ul>
-          <div className="h-16 w-16 shrink-0 sm:h-24 sm:w-24 md:h-32 md:w-32">
+          <div className="h-16 w-16 shrink-0 select-none sm:h-24 sm:w-24 md:h-32 md:w-32 [&_.recharts-responsive-container]:border-0 [&_.recharts-surface]:outline-none [&_.recharts-wrapper]:border-0 [&_.recharts-wrapper]:outline-none">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
@@ -224,15 +235,17 @@ function BudgetPieSplit({
                   innerRadius="52%"
                   outerRadius="88%"
                   paddingAngle={data.length > 1 ? 2 : 0}
+                  isAnimationActive={false}
+                  stroke="none"
                 >
                   {data.map((entry, i) => (
                     <Cell
                       key={entry.key}
                       fill={entry.color ?? FINANCIER_COLORS[i % FINANCIER_COLORS.length]}
+                      stroke="none"
                     />
                   ))}
                 </Pie>
-                <Tooltip formatter={(v: number) => formatPhp(v)} />
               </PieChart>
             </ResponsiveContainer>
           </div>
@@ -512,11 +525,30 @@ export function FinancierBudgetListPage() {
   )
   const allocateExceedsMax = allocateOverBudget > 0 && poolBudgetMax > 0
   const allocateExceedsProfitMax = allocateOverProfit > 0 && poolProfitMax > 0
-  const allocateProfitShortfall = useMemo(
-    () => Math.max(0, poolProfitMax - toNumber(totalProfit) - totalChipInProfit),
-    [poolProfitMax, totalProfit, totalChipInProfit],
+  const poolBudgetFilled = useMemo(
+    () => toNumber(totalOwn) + totalBorrowed,
+    [totalOwn, totalBorrowed],
   )
-  const allocateProfitKulang = allocateProfitShortfall > 0.05 && poolProfitMax > 0
+  const allocateProfitAssigned = useMemo(
+    () => toNumber(totalProfit) + totalChipInProfit,
+    [totalProfit, totalChipInProfit],
+  )
+  const allocateProfitGapFromBudget = useMemo(
+    () => profitUnallocatedFromBudgetGap(chipInGap, poolBudgetMax, poolProfitMax),
+    [chipInGap, poolBudgetMax, poolProfitMax],
+  )
+  const allocateProfitBlockingShortfall = useMemo(
+    () =>
+      poolProfitShortfallBlocking(
+        allocateProfitAssigned,
+        poolProfitMax,
+        chipInGap,
+        poolBudgetMax,
+      ),
+    [allocateProfitAssigned, poolProfitMax, chipInGap, poolBudgetMax],
+  )
+  const allocateBudgetKulang = chipInGap > POOL_MONEY_TOLERANCE && poolBudgetMax > 0
+  const allocateProfitKulang = allocateProfitBlockingShortfall > POOL_MONEY_TOLERANCE && poolProfitMax > 0
   const allocateOverRef = useRef(false)
   const allocateProfitOverRef = useRef(false)
   const allocateProfitKulangRef = useRef(false)
@@ -550,11 +582,17 @@ export function FinancierBudgetListPage() {
   useEffect(() => {
     if (allocateProfitKulang && !allocateProfitKulangRef.current && !allocateExceedsProfitMax) {
       toast.error(
-        `Kulang by ${formatPhp(allocateProfitShortfall)}. Total profit must equal ${formatPhp(poolProfitMax)}.`,
+        `Kulang by ${formatPhp(allocateProfitBlockingShortfall)}. Total profit must equal ${formatPhp(poolProfitMax - allocateProfitGapFromBudget)} when budget has a gap.`,
       )
     }
     allocateProfitKulangRef.current = allocateProfitKulang
-  }, [allocateProfitKulang, allocateProfitShortfall, poolProfitMax, allocateExceedsProfitMax])
+  }, [
+    allocateProfitKulang,
+    allocateProfitBlockingShortfall,
+    allocateProfitGapFromBudget,
+    poolProfitMax,
+    allocateExceedsProfitMax,
+  ])
 
   /** Default profit = same % of pool profit as each person's budget is of the pool budget max. */
   useEffect(() => {
@@ -675,10 +713,18 @@ export function FinancierBudgetListPage() {
     [distributionPreview, financeColorById],
   )
 
-  const poolPutTotal = useMemo(
-    () => poolPutSegments.reduce((s, seg) => s + seg.amount, 0),
-    [poolPutSegments],
-  )
+  const poolPutSegmentsWithGap = useMemo(() => {
+    const segments = [...poolPutSegments]
+    if (chipInGap > POOL_MONEY_TOLERANCE) {
+      segments.push({
+        id: 'budget-gap',
+        label: 'Gap',
+        amount: chipInGap,
+        color: PIE_GAP_COLOR,
+      })
+    }
+    return segments
+  }, [poolPutSegments, chipInGap])
 
   /** Per-finance people: You + each chip-in, with capital and profit split for the table. */
   const peopleBreakdownByFinance = useMemo(() => {
@@ -1060,9 +1106,9 @@ export function FinancierBudgetListPage() {
       )
       return
     }
-    if (poolProfitMax > 0 && allocateProfitShortfall > 0.05) {
+    if (poolProfitMax > 0 && allocateProfitBlockingShortfall > POOL_MONEY_TOLERANCE) {
       toast.error(
-        `Kulang by ${formatPhp(allocateProfitShortfall)}. Total profit must equal ${formatPhp(poolProfitMax)}.`,
+        `Kulang by ${formatPhp(allocateProfitBlockingShortfall)}. Total profit must equal ${formatPhp(poolProfitMax - allocateProfitGapFromBudget)} when budget has a gap.`,
       )
       return
     }
@@ -1196,17 +1242,20 @@ export function FinancierBudgetListPage() {
                     </p>
                     {poolBudgetMax > 0 ? (
                       <>
-                        <p className="text-xs font-semibold tabular-nums sm:text-sm">
-                          {formatPhp(poolPutTotal)} / {formatPhp(poolBudgetMax)} (
-                          {((poolPutTotal / poolBudgetMax) * 100).toFixed(2)}%)
+                        <p
+                          className={cn(
+                            'text-xs font-semibold tabular-nums sm:text-sm',
+                            allocateBudgetKulang ? 'text-destructive' : undefined,
+                          )}
+                        >
+                          {formatPhp(poolBudgetFilled)} / {formatPhp(poolBudgetMax)} (
+                          {poolBudgetFillPercent(poolBudgetFilled, poolBudgetMax)}%)
+                          {allocateBudgetKulang ? ` · kulang ${formatPhp(chipInGap)}` : null}
                         </p>
-                        <FundingProgressBar capital={poolBudgetMax} segments={poolPutSegments} />
-                        <FundingProgressLegend segments={poolPutSegments.filter((s) => s.amount > 0)} />
-                        {chipInGap > 0 ? (
-                          <p className="text-[10px] text-muted-foreground">
-                            Gap: {formatPhp(chipInGap)}
-                          </p>
-                        ) : null}
+                        <FundingProgressBar capital={poolBudgetMax} segments={poolPutSegmentsWithGap} />
+                        <FundingProgressLegend
+                          segments={poolPutSegmentsWithGap.filter((s) => s.amount > 0)}
+                        />
                       </>
                     ) : (
                       <p className="text-[10px] text-muted-foreground">
@@ -1233,7 +1282,15 @@ export function FinancierBudgetListPage() {
                           {allocateExceedsProfitMax
                             ? ` · sobra ${formatPhp(allocateOverProfit)}`
                             : null}
-                          {allocateProfitKulang ? ` · kulang ${formatPhp(allocateProfitShortfall)}` : null}
+                          {allocateProfitKulang
+                            ? ` · kulang ${formatPhp(allocateProfitBlockingShortfall)}`
+                            : null}
+                          {!allocateProfitKulang && allocateProfitGapFromBudget > POOL_MONEY_TOLERANCE ? (
+                            <span className="text-muted-foreground">
+                              {' '}
+                              · {formatPhp(allocateProfitGapFromBudget)} unallocated (budget gap)
+                            </span>
+                          ) : null}
                         </p>
                         {poolProfitSegments.length > 0 ? (
                           <>
@@ -1460,7 +1517,7 @@ export function FinancierBudgetListPage() {
                 distributing ||
                 allocateExceedsMax ||
                 allocateExceedsProfitMax ||
-                (poolProfitMax > 0 && allocateProfitShortfall > 0.05)
+                (poolProfitMax > 0 && allocateProfitBlockingShortfall > POOL_MONEY_TOLERANCE)
               }
               onClick={() => void handleDistribute()}
             >
@@ -1990,6 +2047,74 @@ export function FinancierBudgetDetailPage() {
     [ownCapital, myConfirmed, myProfitShare, myCapitalReturn, lenders],
   )
 
+  const soloBudgetGap = useMemo(
+    () => Math.max(0, myConfirmed - summary.stakeTotal),
+    [myConfirmed, summary.stakeTotal],
+  )
+  const soloBudgetKulang = soloBudgetGap > POOL_MONEY_TOLERANCE && myConfirmed > 0
+  const soloProfitUnallocated = useMemo(
+    () => profitUnallocatedFromBudgetGap(soloBudgetGap, myConfirmed, myProfitShare),
+    [soloBudgetGap, myConfirmed, myProfitShare],
+  )
+
+  const soloBudgetSegments = useMemo(() => {
+    const segments: Array<{ id: string; label: string; amount: number; color: string }> = []
+    const own = toNumber(ownCapital)
+    if (own > 0) {
+      segments.push({ id: 'you-capital', label: 'You', amount: own, color: FINANCIER_COLORS[0] })
+    }
+    lenders.forEach((l, i) => {
+      const amount = toNumber(l.borrowed_amount)
+      if (amount <= 0) return
+      segments.push({
+        id: `chip-${l.clientKey}`,
+        label: l.lender_name.trim() || `Chip-in ${i + 1}`,
+        amount,
+        color: FINANCIER_COLORS[(i + 1) % FINANCIER_COLORS.length],
+      })
+    })
+    if (soloBudgetGap > POOL_MONEY_TOLERANCE) {
+      segments.push({
+        id: 'budget-gap',
+        label: 'Gap',
+        amount: soloBudgetGap,
+        color: PIE_GAP_COLOR,
+      })
+    }
+    return segments
+  }, [ownCapital, lenders, soloBudgetGap])
+
+  const soloProfitSegments = useMemo(() => {
+    const segments: Array<{ id: string; label: string; amount: number; color: string }> = []
+    if (summary.myNetProfit > 0) {
+      segments.push({
+        id: 'you-profit',
+        label: 'You',
+        amount: summary.myNetProfit,
+        color: FINANCIER_COLORS[0],
+      })
+    }
+    summary.lenders.forEach((l, i) => {
+      const profit = l.profit_portion ?? 0
+      if (profit <= 0) return
+      segments.push({
+        id: `profit-${l.lender_name}-${i}`,
+        label: l.lender_name,
+        amount: profit,
+        color: FINANCIER_COLORS[(i + 1) % FINANCIER_COLORS.length],
+      })
+    })
+    if (soloProfitUnallocated > POOL_MONEY_TOLERANCE) {
+      segments.push({
+        id: 'profit-unallocated',
+        label: 'Unallocated',
+        amount: soloProfitUnallocated,
+        color: PIE_GAP_COLOR,
+      })
+    }
+    return segments
+  }, [summary, soloProfitUnallocated])
+
   const capitalPieData = useMemo(() => {
     const slices: PieSlice[] = []
     const own = toNumber(ownCapital)
@@ -2175,6 +2300,57 @@ export function FinancierBudgetDetailPage() {
               emptyMessage="Set profit or chip-in shares to see the split."
             />
           </div>
+
+          {myConfirmed > 0 ? (
+            <div className="rounded-lg border p-2.5 sm:p-3">
+              <div className="grid gap-3 sm:grid-cols-2 sm:gap-4">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Pooling budget
+                  </p>
+                  <p
+                    className={cn(
+                      'text-xs font-semibold tabular-nums sm:text-sm',
+                      soloBudgetKulang ? 'text-destructive' : undefined,
+                    )}
+                  >
+                    {formatPhp(summary.stakeTotal)} / {formatPhp(myConfirmed)} (
+                    {poolBudgetFillPercent(summary.stakeTotal, myConfirmed)}%)
+                    {soloBudgetKulang ? ` · kulang ${formatPhp(soloBudgetGap)}` : null}
+                  </p>
+                  <FundingProgressBar capital={myConfirmed} segments={soloBudgetSegments} />
+                  <FundingProgressLegend segments={soloBudgetSegments.filter((s) => s.amount > 0)} />
+                </div>
+
+                <div className="min-w-0 space-y-1 border-t pt-3 sm:border-t-0 sm:border-l sm:pt-0 sm:pl-4">
+                  <p className="text-[9px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Pooling profit
+                  </p>
+                  {myProfitShare > 0 ? (
+                    <>
+                      <p className="text-xs font-semibold tabular-nums sm:text-sm">
+                        {formatPhp(myProfitShare - soloProfitUnallocated)} / {formatPhp(myProfitShare)}
+                        {soloProfitUnallocated > POOL_MONEY_TOLERANCE ? (
+                          <span className="text-muted-foreground">
+                            {' '}
+                            · {formatPhp(soloProfitUnallocated)} unallocated (budget gap)
+                          </span>
+                        ) : null}
+                      </p>
+                      {soloProfitSegments.length > 0 ? (
+                        <>
+                          <FundingProgressBar capital={myProfitShare} segments={soloProfitSegments} />
+                          <FundingProgressLegend segments={soloProfitSegments.filter((s) => s.amount > 0)} />
+                        </>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="text-[10px] text-muted-foreground">Set profit to see pooling.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <div className="space-y-2 border-t pt-3 text-xs sm:space-y-3 sm:text-sm">
             {summary.warnings.length > 0 ? (

@@ -1,4 +1,4 @@
-import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
+import { Cell, Pie, PieChart, ResponsiveContainer } from 'recharts'
 import { formatPhp } from '@/lib/money'
 import { cn } from '@/lib/utils'
 
@@ -49,7 +49,7 @@ export function FinanceBudgetPieChart({
             )
           })}
         </ul>
-        <div className="h-24 w-24 shrink-0 sm:h-28 sm:w-28">
+        <div className="h-24 w-24 shrink-0 select-none sm:h-28 sm:w-28 [&_.recharts-responsive-container]:border-0 [&_.recharts-surface]:outline-none [&_.recharts-wrapper]:border-0 [&_.recharts-wrapper]:outline-none">
           <ResponsiveContainer width="100%" height="100%">
             <PieChart>
               <Pie
@@ -59,12 +59,13 @@ export function FinanceBudgetPieChart({
                 innerRadius="52%"
                 outerRadius="88%"
                 paddingAngle={slices.length > 1 ? 2 : 0}
+                isAnimationActive={false}
+                stroke="none"
               >
                 {slices.map((entry) => (
-                  <Cell key={entry.key} fill={entry.color} />
+                  <Cell key={entry.key} fill={entry.color} stroke="none" />
                 ))}
               </Pie>
-              <Tooltip formatter={(value: number) => formatPhp(value)} />
             </PieChart>
           </ResponsiveContainer>
         </div>
