@@ -44,7 +44,7 @@ import {
   budgetPoolRingColors,
 } from '@/lib/financierColors'
 import { budgetBasedProfitShare, formatMoneyInput, formatPhp, moneyInputFromValue, toNumber } from '@/lib/money'
-import { projectIdentityKey } from '@/lib/finance-group'
+import { dedupeOverlappingProjectIds } from '@/lib/finance-group'
 import { projectStatusClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
@@ -169,21 +169,12 @@ type BudgetPfSourceRow = {
 
 /** Hide solo duplicate when the same finance name+date exists in a group batch. */
 function dedupeBudgetPfRows(rows: BudgetPfSourceRow[]): BudgetPfSourceRow[] {
-  const groupedKeys = new Set<string>()
-  for (const row of rows) {
-    const project = row.projects
-    if (!project) continue
-    const key = projectIdentityKey(project)
-    if (key && project.group_id) groupedKeys.add(key)
-  }
-  if (groupedKeys.size === 0) return rows
-  return rows.filter((row) => {
-    const project = row.projects
-    if (!project) return false
-    const key = projectIdentityKey(project)
-    if (!key || project.group_id) return true
-    return !groupedKeys.has(key)
-  })
+  const withProject = rows.filter((r): r is BudgetPfSourceRow & { projects: NonNullable<BudgetPfSourceRow['projects']> } =>
+    Boolean(r.projects),
+  )
+  if (withProject.length === 0) return rows
+  const keepIds = dedupeOverlappingProjectIds(withProject.map((r) => r.projects))
+  return withProject.filter((r) => keepIds.has(r.projects.id))
 }
 
 function BudgetPieSplit({

@@ -120,3 +120,10 @@ export function dedupeOverlappingProjects(items: Project[]): Project[] {
     return !groupedKeys.has(key)
   })
 }
+
+/** Keep project ids after removing solo duplicates that overlap a group batch. */
+export function dedupeOverlappingProjectIds(
+  items: Array<Pick<Project, 'id' | 'name' | 'financing_date' | 'group_id'>>,
+): Set<string> {
+  return new Set(dedupeOverlappingProjects(items as Project[]).map((p) => p.id))
+}
