@@ -484,10 +484,6 @@ export function AdminProfilePage() {
             <CardTitle className="text-base">Change PIN</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="mb-4 text-sm text-muted-foreground">
-              Forgot your PIN? Use backup PIN <span className="font-medium text-foreground">1111</span> on the landing page,
-              then set a new PIN here.
-            </p>
             <form
               className="space-y-4"
               onSubmit={async (e) => {
