@@ -28,6 +28,7 @@ export interface Profile {
   id: string
   username: string
   full_name: string
+  display_name?: string | null
   email: string | null
   contact_number: string | null
   role: UserRole
@@ -146,7 +147,7 @@ export interface ProjectFinancier {
   reconciliation_adjustment: number | string
   created_at: string
   updated_at: string
-  profiles?: Pick<Profile, 'id' | 'username' | 'full_name' | 'email' | 'contact_number' | 'account_status'> | null
+  profiles?: Pick<Profile, 'id' | 'username' | 'full_name' | 'display_name' | 'email' | 'contact_number' | 'account_status'> | null
   projects?: Pick<
     Project,
     | 'id'

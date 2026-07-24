@@ -23,7 +23,7 @@ import { dedupeOverlappingProjects } from '@/lib/finance-group'
 import { budgetBasedProfitShare, formatPercent, formatPhp, fundingProgress, remainingGap, toNumber } from '@/lib/money'
 import { projectStatusTableClassName, projectStatusVariant } from '@/lib/status'
 import { supabase } from '@/lib/supabase'
-import { PROJECT_STATUS_LABELS, type Project, type ProjectFinancier } from '@/types'
+import { PROJECT_STATUS_LABELS, type Profile, type Project, type ProjectFinancier } from '@/types'
 
 const STATUS_COLORS = ['#0b2a4a', '#1a4a73', '#b7791f', '#1f7a4d', '#5b6b7c', '#c0392b', '#334e68', '#486581']
 
@@ -50,9 +50,20 @@ type FinancierAnalyticsRow = {
   profit: number
 }
 
+type ConfirmedCommitmentRow = Pick<
+  ProjectFinancier,
+  'id' | 'financier_id' | 'project_id' | 'confirmed_amount' | 'confirmed_percentage' | 'commitment_status'
+> & {
+  profiles?: Pick<Profile, 'full_name' | 'display_name'> | null
+  projects?: Pick<
+    Project,
+    'id' | 'name' | 'capital_required' | 'expected_profit' | 'group_id' | 'financing_date' | 'status'
+  > | null
+}
+
 function aggregateFinancierAnalytics(
   projects: Project[],
-  commitments: ProjectFinancier[],
+  commitments: ConfirmedCommitmentRow[],
 ): { byFunded: FinancierAnalyticsRow[]; byProfit: FinancierAnalyticsRow[] } {
   const unique = dedupeOverlappingProjects(projects)
   const includedProjectIds = new Set(unique.map((p) => p.id))
@@ -69,7 +80,7 @@ function aggregateFinancierAnalytics(
     const amount = toNumber(row.confirmed_amount)
     if (amount <= 0) continue
 
-    const profile = row.profiles as { full_name?: string; display_name?: string } | null | undefined
+    const profile = row.profiles
     const name = profile?.display_name || profile?.full_name || 'Unknown'
     const profit =
       Math.round(
@@ -131,7 +142,7 @@ function FinancierPieChart({
 export function AdminDashboardPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [financiers, setFinanciers] = useState<ProjectFinancier[]>([])
-  const [confirmedCommitments, setConfirmedCommitments] = useState<ProjectFinancier[]>([])
+  const [confirmedCommitments, setConfirmedCommitments] = useState<ConfirmedCommitmentRow[]>([])
   const [confirmedByProject, setConfirmedByProject] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(true)
   const [detailOpen, setDetailOpen] = useState(false)
@@ -167,7 +178,7 @@ export function AdminDashboardPage() {
       if (cancelled) return
       setProjects((pRes.data as Project[]) ?? [])
       setFinanciers((fRes.data as ProjectFinancier[]) ?? [])
-      setConfirmedCommitments((confirmedRes.data as ProjectFinancier[]) ?? [])
+      setConfirmedCommitments((confirmedRes.data ?? []) as unknown as ConfirmedCommitmentRow[])
       const confirmedMap: Record<string, number> = {}
       for (const row of (cRes.data as Pick<ProjectFinancier, 'project_id' | 'confirmed_amount'>[]) ?? []) {
         confirmedMap[row.project_id] = (confirmedMap[row.project_id] ?? 0) + toNumber(row.confirmed_amount)
