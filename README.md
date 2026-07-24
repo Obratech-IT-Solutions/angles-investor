@@ -90,6 +90,15 @@ After that, create financiers from **Admin → Financiers** (Edge Function `admi
 
 Build command: `npm run build` · Output: `dist`
 
+### Supabase free-tier keep-alive
+
+To reduce free-tier pauses (~7 days idle), the app includes:
+
+- **Vercel Cron** every 3 days → `GET /api/keepalive` (uses `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY`)
+- **Client pulse** on site open (at most once per 3 days per browser)
+
+No extra env vars required if those two are already set on Vercel.
+
 ### Custom domain (e.g. `angels.obratech.net`)
 
 In **Supabase → Authentication → URL Configuration**, add:
