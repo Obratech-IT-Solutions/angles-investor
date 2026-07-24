@@ -1,5 +1,12 @@
 [
   {
+    "key": "account_backup_pin",
+    "value": {
+      "pin": "1111"
+    },
+    "updated_at": "2026-07-24T12:22:00.000000+00:00"
+  },
+  {
     "key": "admin_backup_pin",
     "value": {
       "pin": "1111"
