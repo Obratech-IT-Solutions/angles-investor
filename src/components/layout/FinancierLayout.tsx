@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, Outlet, useNavigate } from 'react-router-dom'
 import {
   BarChart3,
+  DollarSign,
   FolderKanban,
   LayoutDashboard,
   LogOut,
@@ -26,8 +27,8 @@ const finNav: NavItem[] = [
 function Brand() {
   return (
     <Link to="/app" className="flex items-center gap-2 px-4 py-5">
-      <div className="flex h-9 w-9 items-center justify-center rounded-md bg-white/15 text-sm font-bold text-white">
-        FT
+      <div className="flex h-9 w-9 items-center justify-center rounded-md bg-white/15 text-white">
+        <DollarSign className="h-5 w-5" aria-hidden />
       </div>
       <div>
         <div className="font-[family-name:var(--font-display)] text-lg font-bold tracking-tight text-white">
